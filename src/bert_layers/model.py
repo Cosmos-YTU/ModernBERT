@@ -1240,6 +1240,36 @@ class FlexBertForMaskedLM(FlexBertPreTrainedModel):
             params += _count_parameters(self.decoder, trainable)
         return params
 
+    # Composer FSDP Wrapping Function
+    def fsdp_wrap_fn(self, module):
+        "Wrap all FlexBert layers except for the embedding layer and prediction head"
+        if isinstance(
+            module,
+            (
+                FlexBertCompilePreNormLayer,
+                FlexBertParallelPreNormLayer,
+                FlexBertPostNormLayer,
+                FlexBertPreNormLayer,
+                FlexBertPredictionHead,
+            ),
+        ):
+            return True
+
+        # default to False
+        return False
+
+    # ComposerActivation Checkpointing Function
+    def activation_checkpointing_fn(self, module):
+        return isinstance(
+            module,
+            (
+                FlexBertCompilePreNormLayer,
+                FlexBertParallelPreNormLayer,
+                FlexBertPostNormLayer,
+                FlexBertPreNormLayer,
+            ),
+        )
+
 
 class FlexBertForSequenceClassification(FlexBertPreTrainedModel):
     """Bert Model transformer with a sequence classification/regression head.
