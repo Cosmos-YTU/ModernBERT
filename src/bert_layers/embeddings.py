@@ -143,26 +143,56 @@ class FlexBertAbsoluteEmbeddings(FlexBertEmbeddingsBase):
             if self.config.embed_norm:
                 self.norm.reset_parameters()  # type: ignore
 
+    @torch._dynamo.disable(recursive=True)
+    def build_position_ids(self, cu_seqlens: torch.LongTensor) -> torch.LongTensor:
+        """
+        Args
+        ----
+        cu_seqlens : (B+1,) int32/long
+            Typical Flash-Attention cumulative-length array, beginning with 0 and
+            ending with total_seq.
+
+        Returns
+        -------
+        position_ids : (total_seq,) long
+            0-based positions that restart at every sequence boundary.
+        """
+        device = cu_seqlens.device
+        total_seq = cu_seqlens[-1].item()  # last entry is ∑ lengths
+        tok_idx = torch.arange(total_seq, device=device)
+        seq_id = torch.bucketize(tok_idx, cu_seqlens[1:], right=False)
+        return tok_idx - cu_seqlens[seq_id]  # <- one subtraction does it
+
     def forward(
         self,
         input_ids: torch.LongTensor,
         position_ids: Optional[torch.LongTensor] = None,
-        indices: Optional[torch.LongTensor] = None,
         cu_seqlens: Optional[torch.LongTensor] = None,
-        max_seqlen: Optional[int] = None,
-        used_seqlens: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
-        if position_ids is None:
-            if max_seqlen is None:
-                position_ids = self.position_ids[:, 0 : input_ids.shape[1]]
-            else:
-                position_ids = self.position_ids[:, 0:max_seqlen]
+        """
+        Forward pass through the embedding layer.
 
+        Args:
+            input_ids: (total_seq,) for packed sequences
+            position_ids: Optional (total_seq,) - position indices
+
+        Returns:
+            embeddings: (1, total_seq, hidden_size)
+        """
         embeddings = self.tok_embeddings(input_ids)
+        if position_ids is None:
+            if cu_seqlens is None:
+                position_ids = torch.arange(input_ids.shape[1], device=input_ids.device)
+            else:
+                position_ids = self.build_position_ids(cu_seqlens)
         position_embeddings = self.position_embeddings(position_ids)
 
-        embeddings = self.norm(embeddings + position_embeddings)
-        return self.drop(embeddings)
+        embeddings = self.drop(self.norm(embeddings + position_embeddings))
+        if len(embeddings.shape) == 2:
+            total_seq, dim = embeddings.shape
+            return embeddings.view(1, total_seq, dim)
+        else:
+            return embeddings
 
 
 class FlexBertCompiledSansPositionEmbeddings(FlexBertEmbeddingsBase):
@@ -183,8 +213,28 @@ class FlexBertCompiledSansPositionEmbeddings(FlexBertEmbeddingsBase):
                 self.norm.reset_parameters()  # type: ignore
 
     @torch.compile(dynamic=True)
-    def forward(self, input_ids: torch.LongTensor, position_ids: Optional[torch.LongTensor] = None) -> torch.Tensor:
-        return self.drop(self.norm(self.tok_embeddings(input_ids)))
+    def forward(
+        self, input_ids: torch.LongTensor, position_ids: Optional[torch.LongTensor] = None, **kwargs
+    ) -> torch.Tensor:
+        """
+        Forward pass through the embedding layer.
+
+        Args:
+            input_ids: (total_seq,) for packed sequences
+            position_ids: Optional (total_seq,) - position indices
+
+        Returns:
+            embeddings: (1, total_seq, hidden_size)
+        """
+        embeddings = self.norm(self.tok_embeddings(input_ids))
+
+        # Reshape to (1, total_seq, hidden_size)
+        total_seq, dim = embeddings.shape
+        if len(embeddings.shape) == 2:
+            total_seq, dim = embeddings.shape
+            return self.drop(embeddings).view(1, total_seq, dim)
+        else:
+            return self.drop(embeddings)
 
 
 class FlexBertSansPositionEmbeddings(FlexBertEmbeddingsBase):
@@ -204,8 +254,28 @@ class FlexBertSansPositionEmbeddings(FlexBertEmbeddingsBase):
             if self.config.embed_norm:
                 self.norm.reset_parameters()  # type: ignore
 
-    def forward(self, input_ids: torch.LongTensor, position_ids: Optional[torch.LongTensor] = None) -> torch.Tensor:
-        return self.drop(self.norm(self.tok_embeddings(input_ids)))
+    def forward(
+        self, input_ids: torch.LongTensor, position_ids: Optional[torch.LongTensor] = None, **kwargs
+    ) -> torch.Tensor:
+        """
+        Forward pass through the embedding layer.
+
+        Args:
+            input_ids: (total_seq,) for packed sequences
+            position_ids: Optional (total_seq,) - position indices
+
+        Returns:
+            embeddings: (1, total_seq, hidden_size)
+        """
+        embeddings = self.norm(self.tok_embeddings(input_ids))
+
+        # Reshape to (1, total_seq, hidden_size)
+        total_seq, dim = embeddings.shape
+        if len(embeddings.shape) == 2:
+            total_seq, dim = embeddings.shape
+            return self.drop(embeddings).view(1, total_seq, dim)
+        else:
+            return self.drop(embeddings)
 
 
 EBB2CLS = {

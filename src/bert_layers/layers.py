@@ -155,7 +155,7 @@ class BertAlibiEncoder(nn.Module):
         # and ntokens_unpad is total number of non-padded tokens.
         # Then unpadding performs the following compression of the inputs:
         # hidden_states[ntokens,hidden] -> hidden_states[ntokens_unpad,hidden]
-        hidden_states, indices, cu_seqlens, _ = bert_padding.unpad_input(hidden_states, attention_mask_bool)
+        hidden_states, indices, cu_seqlens, _, _ = bert_padding.unpad_input(hidden_states, attention_mask_bool)
 
         # Add alibi matrix to extended_attention_mask
         if self._current_alibi_size < seqlen:
@@ -327,15 +327,23 @@ class FlexBertCompilePreNormLayer(FlexBertLayerBase):
         """Forward pass for a BERT layer, including both attention and MLP.
 
         Args:
-            hidden_states: (total_nnz, dim)
+            hidden_states: (1, total_seq, dim)
             cu_seqlens: (batch + 1,)
             max_seqlen: int
             indices: None or (total_nnz,)
             attn_mask: None or (batch, max_seqlen)
             used_seqlens: None or (total_non_padded_tokens,)
+
+        Returns:
+            (1, total_seq, dim)
         """
-        attn_out = hidden_states + self.compiled_attn(hidden_states, cu_seqlens, max_seqlen, indices, attn_mask, used_seqlens)  # fmt: skip
-        return attn_out + self.compiled_mlp(attn_out)
+        # torch.compile requires 3-dim tensor for autocasting, but compiled linear layers slow down with a leading 1 batch dim
+        # so we remove the leading batch dim for each attention and mlp block and add it back for the residual
+        _, total_seq, dim = hidden_states.shape
+        attn_out = self.compiled_attn(hidden_states.view(total_seq, dim), cu_seqlens, max_seqlen, indices, attn_mask, used_seqlens)  # fmt: skip
+        hidden_states = hidden_states + attn_out.view(1, total_seq, dim)
+        mlp_out = self.compiled_mlp(hidden_states.view(total_seq, dim))
+        return hidden_states + mlp_out.view(1, total_seq, dim)
 
 
 class FlexBertPreNormLayer(FlexBertLayerBase):
@@ -369,15 +377,23 @@ class FlexBertPreNormLayer(FlexBertLayerBase):
         """Forward pass for a BERT layer, including both attention and MLP.
 
         Args:
-            hidden_states: (total_nnz, dim)
+            hidden_states: (1, total_seq, dim)
             cu_seqlens: (batch + 1,)
             max_seqlen: int
             indices: None or (total_nnz,)
             attn_mask: None or (batch, max_seqlen)
             used_seqlens: None or (total_non_padded_tokens,)
+
+        Returns:
+            (1, total_seq, dim)
         """
-        attn_out = hidden_states + self.attn(self.attn_norm(hidden_states), cu_seqlens, max_seqlen, indices, attn_mask, used_seqlens)  # fmt: skip
-        return attn_out + self.mlp(self.mlp_norm(attn_out))
+        # torch.compile requires 3-dim tensor for autocasting, but compiled linear layers slow down with a leading 1 batch dim
+        # so we remove the leading batch dim for each attention and mlp block and add it back for the residual
+        _, total_seq, dim = hidden_states.shape
+        attn_out = self.attn(self.attn_norm(hidden_states.view(total_seq, dim)), cu_seqlens, max_seqlen, indices, attn_mask, used_seqlens)  # fmt: skip
+        attn_out = hidden_states + attn_out.view(1, total_seq, dim)
+        mlp_out = self.mlp(self.mlp_norm(attn_out.view(total_seq, dim)))
+        return attn_out + mlp_out.view(1, total_seq, dim)
 
 
 class FlexBertParallelPreNormLayer(FlexBertLayerBase):
@@ -429,14 +445,21 @@ class FlexBertParallelPreNormLayer(FlexBertLayerBase):
         """Forward pass for a BERT layer, including both attention and MLP.
 
         Args:
-            hidden_states: (total_nnz, dim)
+            hidden_states: (1, total_seq, dim)
+            cu_seqlens: (batch + 1,)
+            max_seqlen: int
+            indices: None or (total_nnz,)
             attn_mask: None or (batch, max_seqlen)
+            used_seqlens: None or (total_non_padded_tokens,)
+
+        Returns:
+            (1, total_seq, dim)
         """
         # Compute QKV and FF outputs at once and split them
-        normed = self.norm(hidden_states)
-        qkv = self.Wqkv(normed)
-        mlp = self.Wffn(normed)
-        return hidden_states + self.attn(qkv, cu_seqlens, max_seqlen, indices, attn_mask, used_seqlens) + self.mlp(mlp)  # fmt: skip
+        _, total_seq, dim = hidden_states.shape
+        normed = self.norm(hidden_states.view(total_seq, dim))
+        parallel_out = self.attn(self.Wqkv(normed), cu_seqlens, max_seqlen, indices, attn_mask, used_seqlens) + self.mlp(self.Wffn(normed))  # fmt: skip
+        return hidden_states + parallel_out.view(1, total_seq, dim)
 
 
 class FlexBertPostNormLayer(FlexBertLayerBase):
@@ -467,15 +490,23 @@ class FlexBertPostNormLayer(FlexBertLayerBase):
         """Forward pass for a BERT layer, including both attention and MLP.
 
         Args:
-            hidden_states: (total_nnz, dim)
+            hidden_states: (1, total_seq, dim)
             cu_seqlens: (batch + 1,)
             max_seqlen: int
             indices: None or (total_nnz,)
             attn_mask: None or (batch, max_seqlen)
             used_seqlens: None or (total_non_padded_tokens,)
+
+        Returns:
+            (1, total_seq, dim)
         """
-        attn_out = self.attn_norm(hidden_states + self.attn(hidden_states, cu_seqlens, max_seqlen, indices, attn_mask, used_seqlens))  # fmt: skip
-        return self.mlp_norm(attn_out + self.mlp(attn_out))
+        # torch.compile requires 3-dim tensor for autocasting, but compiled linear layers slow down with a leading 1 batch dim
+        # so we remove the leading batch dim for each attention and mlp block and add it back for the residual
+        _, total_seq, dim = hidden_states.shape
+        attn_out = self.attn(hidden_states.view(total_seq, dim), cu_seqlens, max_seqlen, indices, attn_mask, used_seqlens)  # fmt: skip
+        hidden_states = self.attn_norm(hidden_states + attn_out.view(1, total_seq, dim))
+        mlp_out = self.mlp(hidden_states.view(total_seq, dim))
+        return self.mlp_norm(hidden_states + mlp_out.view(1, total_seq, dim))
 
 
 LAYER2CLS = {

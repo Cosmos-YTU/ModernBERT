@@ -274,8 +274,8 @@ class FlexBertAttentionBase(nn.Module):
 class FlexBertAttention(FlexBertAttentionBase):
     """Performs multi-headed self attention on a batch of unpadded sequences.
 
-    If Flash Attention 2 is installed, this module uses Flash Attention to improve throughput.
-    If Flash Attention 2 is not installed, the implementation will use PyTorch's SDPA kernel,
+    If Flash Attention 2 or 3 is installed, this module uses Flash Attention to improve throughput.
+    If Flash Attention 2 or 3 is not installed, the implementation will use PyTorch's SDPA kernel,
     which requires padding and unpadding inputs, adding some overhead.
 
     See `forward` method for additional detail.
@@ -369,25 +369,28 @@ class FlexBertAttention(FlexBertAttentionBase):
     ) -> torch.Tensor:
         """Perform self-attention.
 
-        There are two attention implementations supported: PyTorch's SDPA attention and Flash Attention 2.
+        There are three attention implementations supported: PyTorch's SDPA attention, Flash Attention 2,
+        and Flash Attention 3.
 
         The arguments are unpadded. The SDPA implementation of attention requires padded arguments while the
-        Flash Attention implementation does not. If using SDPA we first call `pad_input`. Once we compute
+        Flash Attention implementations do not. If using SDPA we first call `pad_input`. Once we compute
         attention, we re-unpad our outputs for the other layers. The pad/unpad operations add overhead, but not
         sending pad tokens through ffs saves compute.
 
         Args:
-            hidden_states: (1, total_seq, dim)
+            hidden_states: (total_seq, dim)
             cu_seqlens: (batch + 1,)
             max_seqlen: int
             indices: (total_seq,)
             attn_mask: (batch, max_seqlen)
 
         Returns:
-            attention: (1, total_seq, dim)
+            attention: (total_seq, dim)
         """
-        _, total_seq, dim = hidden_states.shape
+        total_seq, dim = hidden_states.shape
+
         qkv = self.Wqkv(hidden_states)
+
         if self.use_fa3:
             qkv = qkv.view(total_seq, 3, self.num_attention_heads, self.attn_head_size)
             convert_dtype = qkv.dtype not in (torch.float16, torch.bfloat16)
@@ -471,14 +474,14 @@ class FlexBertAttention(FlexBertAttentionBase):
             attn = attn.transpose(1, 2).view(unpad_bs, -1, dim)  # b s h d
             attn = bert_padding.unpad_input_only(attn, torch.squeeze(attn_mask) == 1)
 
-        return self.out_drop(self.Wo(attn.view(1, total_seq, dim)))
+        return self.out_drop(self.Wo(attn.view(total_seq, dim)))
 
 
 class FlexBertParallelAttention(FlexBertAttentionBase):
     """Computes the output of the multi-headed self parallel attention on a batch of unpadded sequences
 
-    If Flash Attention 2 is installed, this module uses Flash Attention to improve throughput.
-    If Flash Attention 2 is not installed, the implementation will use PyTorch's SDPA kernel,
+    If Flash Attention 2 or 3 is installed, this module uses Flash Attention to improve throughput.
+    If Flash Attention 2 or 3 is not installed, the implementation will use PyTorch's SDPA kernel,
     which requires padding and unpadding inputs, adding some overhead.
 
     See `forward` method for additional detail.
@@ -564,25 +567,29 @@ class FlexBertParallelAttention(FlexBertAttentionBase):
     ) -> torch.Tensor:
         """Perform self-attention.
 
-        There are two attention implementations supported: PyTorch's SDPA attention and Flash Attention 2.
+        There are three attention implementations supported: PyTorch's SDPA attention, Flash Attention 2,
+        and Flash Attention 3.
 
         The arguments are unpadded. The SDPA implementation of attention requires padded arguments while the
-        Flash Attention implementation does not. If using SDPA we first call `pad_input`. Once we compute
+        Flash Attention implementations do not. If using SDPA we first call `pad_input`. Once we compute
         attention, we re-unpad our outputs for the other layers. The pad/unpad operations add overhead, but not
         sending pad tokens through ffs saves compute.
 
         Args:
-            qkv: (1, total_seq, 3 * hidden_size)
+            qkv: (total_seq, 3 * hidden_size)
             cu_seqlens: (batch + 1,)
             max_seqlen: int
             indices: (total_nnz,)
             attn_mask: (batch, max_seqlen)
 
         Returns:
-            attention: (1, total_seq, dim)
+            attention: (total_seq, dim)
         """
-        total_seq = qkv.shape[1]
+        total_seq = qkv.shape[0]
         dim = self.hidden_size
+
+        # (total_seqlen, 3, nheads, headdim)
+        qkv = qkv.view(total_seq, 3, self.num_attention_heads, self.attn_head_size)
 
         if self.use_fa3:
             convert_dtype = qkv.dtype not in (torch.float16, torch.bfloat16)
@@ -590,7 +597,7 @@ class FlexBertParallelAttention(FlexBertAttentionBase):
                 # FA3 implementation only supports fp16 and bf16.
                 orig_dtype = qkv.dtype
                 qkv = qkv.to(torch.bfloat16)
-                q, k, v = qkv.view(total_seq, 3, self.num_attention_heads, self.attn_head_size).unbind(dim=1)
+                q, k, v = qkv.unbind(dim=1)
 
                 attn, _ = flash_attn_varlen_func(
                     q=q,
@@ -607,7 +614,7 @@ class FlexBertParallelAttention(FlexBertAttentionBase):
                 )
                 attn = attn.to(orig_dtype)  # type: ignore
             else:
-                q, k, v = qkv.view(total_seq, 3, self.num_attention_heads, self.attn_head_size).unbind(dim=1)
+                q, k, v = qkv.unbind(dim=1)
                 attn, _ = flash_attn_varlen_func(
                     q=q,
                     k=k,
@@ -622,8 +629,6 @@ class FlexBertParallelAttention(FlexBertAttentionBase):
                     window_size=self.sliding_window,
                 )
         elif self.use_fa2:
-            qkv = qkv.view(total_seq, 3, self.num_attention_heads, self.attn_head_size)
-
             convert_dtype = qkv.dtype not in (torch.float16, torch.bfloat16)
             if convert_dtype:
                 # FA2 implementation only supports fp16 and bf16. If FA2 is supported,
@@ -650,10 +655,9 @@ class FlexBertParallelAttention(FlexBertAttentionBase):
                     window_size=self.sliding_window,
                 )
         else:
-            qkv = bert_padding.pad_input(qkv.squeeze(0), indices, cu_seqlens.shape[0] - 1, max_seqlen)
-            unpad_bs, seqlen, _ = qkv.shape
+            qkv = bert_padding.pad_input(qkv.squeeze(0), indices, cu_seqlens.shape[0] - 1, attn_mask.shape[-1])
+            unpad_bs, seqlen, *_ = qkv.shape
 
-            qkv = qkv.view(unpad_bs, -1, 3, self.num_attention_heads, self.attn_head_size)
             q, k, v = qkv.transpose(3, 1).unbind(dim=2)  # b h s d
             attn = F.scaled_dot_product_attention(
                 q,
@@ -667,14 +671,14 @@ class FlexBertParallelAttention(FlexBertAttentionBase):
             attn = attn.transpose(1, 2).view(unpad_bs, -1, dim)  # b s h d
             attn = bert_padding.unpad_input_only(attn, torch.squeeze(attn_mask) == 1)
 
-        return self.out_drop(self.Wo(attn.view(1, total_seq, dim)))
+        return self.out_drop(self.Wo(attn.view(total_seq, dim)))
 
 
 class FlexBertRopeAttention(FlexBertAttentionBase):
     """Performs multi-headed self attention on a batch of unpadded sequences.
 
-    If Flash Attention 2 is installed, this module uses Flash Attention to improve throughput.
-    If Flash Attention 2 is not installed, the implementation will use PyTorch's SDPA kernel,
+    If Flash Attention 2 or 3 is installed, this module uses Flash Attention to improve throughput.
+    If Flash Attention 2 or 3 is not installed, the implementation will use PyTorch's SDPA kernel,
     which requires padding and unpadding inputs, adding some overhead.
 
     See `forward` method for additional details.
@@ -791,24 +795,25 @@ class FlexBertRopeAttention(FlexBertAttentionBase):
     ) -> torch.Tensor:
         """Perform self-attention.
 
-        There are two attention implementations supported: PyTorch's SDPA attention and Flash Attention 2.
+        There are three attention implementations supported: PyTorch's SDPA attention, Flash Attention 2,
+        and Flash Attention 3.
 
         The arguments are unpadded. The SDPA implementation of attention requires padded arguments while the
-        Flash Attention implementation does not. If using SDPA we first call `pad_input`. Once we compute
+        Flash Attention implementations do not. If using SDPA we first call `pad_input`. Once we compute
         attention, we re-unpad our outputs for the other layers. The pad/unpad operations add overhead, but not
         sending pad tokens through ffs saves compute.
 
         Args:
-            hidden_states: (1, total_seq, dim)
+            hidden_states: (total_seq, dim)
             cu_seqlens: (batch + 1,)
             max_seqlen: int
             indices: (total_seq,)
             attn_mask: (batch, max_seqlen)
 
         Returns:
-            attention: (1, total_seq, dim)
+            attention: (total_seq, dim)
         """
-        _, total_seq, dim = hidden_states.shape
+        total_seq, dim = hidden_states.shape
         qkv = self.Wqkv(hidden_states)
 
         # (total_seqlen, 3, nheads, headdim)
@@ -895,14 +900,14 @@ class FlexBertRopeAttention(FlexBertAttentionBase):
             attn = attn.transpose(1, 2).view(unpad_bs, -1, dim)  # b s h d
             attn = bert_padding.unpad_input_only(attn, torch.squeeze(attn_mask) == 1)
 
-        return self.out_drop(self.Wo(attn.view(1, total_seq, dim)))
+        return self.out_drop(self.Wo(attn.view(total_seq, dim)))
 
 
 class FlexBertRopeParallelAttention(FlexBertAttentionBase):
     """Performs multi-headed self attention on a batch of unpadded sequences.
 
-    If Flash Attention 2 is installed, this module uses Flash Attention to improve throughput.
-    If Flash Attention 2 is not installed, the implementation will use PyTorch's SDPA kernel,
+    If Flash Attention 2 or 3 is installed, this module uses Flash Attention to improve throughput.
+    If Flash Attention 2 or 3 is not installed, the implementation will use PyTorch's SDPA kernel,
     which requires padding and unpadding inputs, adding some overhead.
 
     See `forward` method for additional details.
@@ -1010,24 +1015,25 @@ class FlexBertRopeParallelAttention(FlexBertAttentionBase):
     ) -> torch.Tensor:
         """Perform self-attention.
 
-        There are two attention implementations supported: PyTorch's SDPA attention and Flash Attention 2.
+        There are three attention implementations supported: PyTorch's SDPA attention, Flash Attention 2,
+        and Flash Attention 3.
 
         The arguments are unpadded. The SDPA implementation of attention requires padded arguments while the
-        Flash Attention implementation does not. If using SDPA we first call `pad_input`. Once we compute
+        Flash Attention implementations do not. If using SDPA we first call `pad_input`. Once we compute
         attention, we re-unpad our outputs for the other layers. The pad/unpad operations add overhead, but not
         sending pad tokens through ffs saves compute.
 
         Args:
-            qkv: (1, total_seq, 3 * hidden_size)
+            qkv: (total_seq, 3 * hidden_size)
             cu_seqlens: (batch + 1,)
             max_seqlen: int
             indices: (total_nnz,)
             attn_mask: (batch, max_seqlen)
 
         Returns:
-            attention: (1, total_seq, dim)
+            attention: (total_seq, dim)
         """
-        total_seq = qkv.shape[1]
+        total_seq = qkv.shape[0]
         dim = self.hidden_size
 
         # (total_seqlen, 3, nheads, headdim)
@@ -1114,7 +1120,7 @@ class FlexBertRopeParallelAttention(FlexBertAttentionBase):
             attn = attn.transpose(1, 2).view(unpad_bs, -1, dim)  # b s h d
             attn = bert_padding.unpad_input_only(attn, torch.squeeze(attn_mask) == 1)
 
-        return self.out_drop(self.Wo(attn.view(1, total_seq, dim)))
+        return self.out_drop(self.Wo(attn.view(total_seq, dim)))
 
 
 ATTN2CLS = {

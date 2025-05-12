@@ -947,7 +947,9 @@ class FlexBertModel(FlexBertPreTrainedModel):
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
 
-        embedding_output = self.embeddings(input_ids, position_ids)
+        embedding_output = self.embeddings(input_ids, position_ids, cu_seqlens=cu_seqlens)
+
+        _, total_seq, hidden_size = embedding_output.shape
 
         encoder_outputs = self.encoder(
             hidden_states=embedding_output,
@@ -957,6 +959,9 @@ class FlexBertModel(FlexBertPreTrainedModel):
             max_seqlen=max_seqlen,
             used_seqlens=used_seqlens,
         )
+
+        if cu_seqlens is not None:  # dealing with full model unpadding
+            encoder_outputs = encoder_outputs.view(total_seq, hidden_size)
 
         if self.final_norm is not None:
             encoder_outputs = self.final_norm(encoder_outputs)
@@ -1012,7 +1017,7 @@ class FlexBertForMaskedLM(FlexBertPreTrainedModel):
         self.pad_logits = config.pad_logits
         self.partial_compile = config.partial_compile
         self.masked_prediction = config.masked_prediction
-
+        self.create_position_ids = config.embedding_layer == "absolute_pos"
         # Initialize weights and apply final processing
         self._init_weights(reset_params=False)
 
@@ -1067,7 +1072,13 @@ class FlexBertForMaskedLM(FlexBertPreTrainedModel):
     def unpad_inputs(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor, position_ids: torch.Tensor, labels: torch.Tensor
     ):
-        return unpad_input(input_ids, attention_mask, position_ids, labels)
+        return unpad_input(
+            input_ids,
+            attention_mask,
+            position_ids,
+            labels,
+            create_position_ids=self.create_position_ids,
+        )
 
     @torch.no_grad()
     def pad_inputs(

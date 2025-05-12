@@ -98,7 +98,7 @@ NORM2CLS = {
 
 def get_norm_layer(config: FlexBertConfig, compiled_norm: bool = False) -> nn.Module:
     try:
-        if compiled_norm or config.full_model_compile:
+        if compiled_norm or getattr(config, "full_model_compile", False):
             # Use non-Triton norms when compiling
             if config.normalization.startswith("triton_"):
                 norm = config.normalization.replace("triton_", "")
