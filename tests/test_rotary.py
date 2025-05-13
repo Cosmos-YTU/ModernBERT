@@ -195,7 +195,12 @@ def test_rotary(rotary_emb_fraction, compile, no_compile, dtype):
     if compile:
         rotary.compile()
 
-    config = GPTNeoXConfig(hidden_size=rotary_dim, max_position_embeddings=seqlen, rotary_pct=rotary_emb_fraction)
+    config = GPTNeoXConfig(
+        hidden_size=int(nheads * headdim),
+        max_position_embeddings=seqlen,
+        rotary_pct=rotary_emb_fraction,
+        num_attention_heads=nheads,
+    )
     rotary_neox = GPTNeoXRotaryEmbedding(config, device=device)
 
     # Doesn't matter what tensor we pass in, rotary_neox only uses the device of the tensor
@@ -267,7 +272,13 @@ def test_rotary_no_compile(rotary_emb_fraction, dtype):
 
     qkv_og = qkv.clone().detach()  # Our implementation modifies qkv inplace
     rotary = UnpaddedRotaryEmbeddingNoCompile(rotary_dim, max_seqlen=seqlen, device=device, dtype=dtype)
-    rotary_neox = GPTNeoXRotaryEmbedding(rotary_dim, seqlen, device=device)
+    config = GPTNeoXConfig(
+        hidden_size=int(nheads * headdim),
+        max_position_embeddings=seqlen,
+        rotary_pct=rotary_emb_fraction,
+        num_attention_heads=nheads,
+    )
+    rotary_neox = GPTNeoXRotaryEmbedding(config, device=device)
 
     # Doesn't matter what tensor we pass in, rotary_neox only uses the device of the tensor
     cos_neox, sin_neox = rotary_neox(qkv, position_ids=position_ids)

@@ -61,20 +61,45 @@ xs = [
 ]
 
 
-def compare_structures(s1, s2, rtol=1e-5, atol=1e-8):
-    if type(s1) != type(s2):
-        return False
+def compare_structures(s1, s2, rtol=1e-5, atol=1e-8, path="", message_prefix=""):
+    """Recursively compare nested structures (lists, dicts, tensors). Raise AssertionError on mismatch."""
+    prefix = f"{message_prefix} Mismatch at {path if path else 'root'}:"
+    s1_type = type(s1)
+    s2_type = type(s2)
+    if s1_type is not s2_type:
+        raise AssertionError(f"{prefix} Type mismatch: {s1_type} != {s2_type}. Values: {s1} vs {s2}")
+
     if isinstance(s1, dict):
-        if set(s1.keys()) != set(s2.keys()):
-            return False
-        return all(compare_structures(s1[k], s2[k], rtol, atol) for k in s1.keys())
-    if isinstance(s1, list):
-        if len(s1) != len(s2):
-            return False
-        return all(compare_structures(i1, i2, rtol, atol) for i1, i2 in zip(s1, s2))
-    if isinstance(s1, torch.Tensor):
-        return torch.allclose(s1, s2, rtol=rtol, atol=atol)
-    return s1 == s2
+        s1_keys = set(s1.keys())
+        s2_keys = set(s2.keys())
+        if s1_keys != s2_keys:
+            diff = s1_keys.symmetric_difference(s2_keys)
+            raise AssertionError(f"{prefix} Dict key mismatch: {diff}. Keys: {s1_keys} vs {s2_keys}")
+        for k in s1_keys:
+            compare_structures(s1[k], s2[k], rtol, atol, path=f"{path}[{k!r}]", message_prefix=message_prefix)
+    elif isinstance(s1, list):
+        len1 = len(s1)
+        len2 = len(s2)
+        if len1 != len2:
+            raise AssertionError(f"{prefix} List length mismatch: {len1} != {len2}. Lists: {s1} vs {s2}")
+        for i, (i1, i2) in enumerate(zip(s1, s2)):
+            compare_structures(i1, i2, rtol, atol, path=f"{path}[{i}]", message_prefix=message_prefix)
+    elif isinstance(s1, torch.Tensor):
+        if not torch.allclose(s1, s2, rtol=rtol, atol=atol):
+            # Find first mismatch index for better debugging
+            mismatch_indices = torch.where(~torch.isclose(s1, s2, rtol=rtol, atol=atol))
+            first_mismatch_idx = (
+                tuple(idx[0].item() for idx in mismatch_indices) if len(mismatch_indices[0]) > 0 else None
+            )
+            err_msg = f"{prefix} Tensor mismatch.\nExpected:\n{s1}\nActual:\n{s2}"
+            if first_mismatch_idx:
+                err_msg += f"\nFirst mismatch at index: {first_mismatch_idx}, values: {s1[first_mismatch_idx]} vs {s2[first_mismatch_idx]}"
+            raise AssertionError(err_msg)
+    elif s1 != s2:
+        raise AssertionError(f"{prefix} Value mismatch: {s1} != {s2}")
+
+    # If we reach here without raising, structures are equal at this level
+    return  # No need to return True
 
 
 def test_packer():
@@ -141,7 +166,7 @@ def test_packer():
         },
     ]
 
-    assert compare_structures(out_expected, out_batches)
+    compare_structures(out_expected, out_batches, message_prefix="test_packer:")
     pass
 
 
@@ -244,7 +269,7 @@ def test_packer_masking():
         },
     ]
 
-    assert compare_structures(out_expected, out_batches)
+    compare_structures(out_expected, out_batches, message_prefix="test_packer_masking:")
     pass
 
 
@@ -346,11 +371,7 @@ def test_packer_masking_randomly():
         },
     ]
 
-    # equality rule:
-    #    attention mask == 0 where input_ids == pad_token_id
-    #    where labels == -3, it should match   where
-
-    assert compare_structures(out_expected, out_batches)
+    compare_structures(out_expected, out_batches, message_prefix="test_packer_masking_randomly:")
     pass
 
 
@@ -443,11 +464,11 @@ def test_packer_masking_randomly_should_fail():
             "max_seqlen": [8, 7, 10, 8, 10],
             "attention_mask": tensor(
                 [
-                    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
                     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
                     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+                    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
                     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-                    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1],
+                    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0],
                 ]
             ),
         },
@@ -455,7 +476,15 @@ def test_packer_masking_randomly_should_fail():
     # equality rule:
     #    attention mask == 0 where input_ids == pad_token_id
 
-    assert compare_structures(out_expected, out_batches) == False
+    failed_as_expected = False
+    try:
+        compare_structures(out_expected, out_batches, message_prefix="test_packer_masking_randomly_should_fail:")
+    except AssertionError:
+        failed_as_expected = True  # Comparison failed as expected
+
+    assert failed_as_expected, (
+        "test_packer_masking_randomly_should_fail: Comparison did NOT fail as expected (seed mismatch likely fixed or data changed)"
+    )
     pass
 
 
@@ -609,7 +638,7 @@ def test_split_packed_batch():
         ],
     ]
 
-    assert compare_structures(out_expected, out_microbatches)
+    compare_structures(out_expected, out_microbatches, message_prefix="test_split_packed_batch:")
     pass
 
 
@@ -763,5 +792,5 @@ def test_split_packed_batch_strip_padding():
         ],
     ]
 
-    assert compare_structures(out_expected, out_microbatches)
+    compare_structures(out_expected, out_microbatches, message_prefix="test_split_packed_batch_strip_padding:")
     pass

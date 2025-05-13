@@ -17,6 +17,7 @@ from src.bert_layers.loss import CrossEntropyLossCompile
 is_sm8x = torch.cuda.get_device_capability("cuda")[0] >= 8
 
 
+@pytest.mark.xdist_group(name="serial_group")
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32] + ([torch.bfloat16] if is_sm8x else []))
 @pytest.mark.parametrize("precompute_lse", [False, True])
 @pytest.mark.parametrize("inplace_backward", [False, True])
@@ -87,6 +88,7 @@ def test_cross_entropy_loss(
     assert torch.allclose(x_fa.grad, x_pt.grad, rtol=rtol, atol=atol)
 
 
+@pytest.mark.xdist_group(name="serial_group")
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32] + ([torch.bfloat16] if is_sm8x else []))
 @pytest.mark.parametrize("lse_square_scale", [0.0, 1e-2])
 @pytest.mark.parametrize("return_z_loss", [False, True])

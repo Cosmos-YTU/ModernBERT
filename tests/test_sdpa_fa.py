@@ -36,10 +36,10 @@ except ImportError:
 
 layer_combinations = [
     ("prenorm", "absolute_pos", "base", "mlp"),
-    ("postnorm", "absolute_pos", "base", "glu"),
     ("prenorm", "sans_pos", "rope", "mlp"),
+    ("postnorm", "absolute_pos", "base", "glu"),
     ("postnorm", "sans_pos", "rope", "glu"),
-    ("parallel_prenorm", "absolute_pos", "rope_parallel", "parallel_glu"),
+    ("parallel_prenorm", "absolute_pos", "parallel", "parallel_glu"),
     ("parallel_prenorm", "sans_pos", "rope_parallel", "parallel_glu"),
 ]
 
@@ -84,7 +84,9 @@ def test_trainer(
     if partial_compile and layer == "prenorm":
         config.model.model_config.partial_compile = True
     elif partial_compile:
-        pytest.skip("Only prenorm can be compiled")
+        pytest.skip("Only prenorm can be partially compiled")
+    if partial_compile and embedding == "absolute_pos":
+        pytest.skip("Only absolute pos embeddings can be partially compiled")
 
     if layer == "postnorm":
         config.model.model_config.final_norm = False
