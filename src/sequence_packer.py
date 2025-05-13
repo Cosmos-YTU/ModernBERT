@@ -1,20 +1,18 @@
 # Copyright 2024 onwards Answer.AI, LightOn, and contributors
 # License: Apache-2.0
 
+import math
 import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
-from typing import Generic, Iterable, NamedTuple, Optional, TypeVar, Any, Union, Sequence
-from composer.core.types import Batch
+from typing import Any, Generic, Iterable, NamedTuple, Optional, Sequence, TypeVar, Union
 
 import numpy as np
 import torch
-from numba import njit
-
-
-import math
 from composer.core import Time
+from composer.core.types import Batch
+from numba import njit
 
 
 class BatchSizeWarmupScheduler:
@@ -252,7 +250,6 @@ class SequencePacker(ABC):
 
             cu_seq_lens = [torch.tensor(x, dtype=torch.int32) for x in lst_cu_seq_lens]
             max_seq_lens = [torch.max(x[1:] - x[:-1]).item() for x in cu_seq_lens]
-            used_seqlens = [x[1:] - x[:-1] for x in cu_seq_lens]
             assert isinstance(cu_seq_lens, list), f"Unexpected {type(cu_seq_lens)=}"
             if self.suppress_masking:
                 yieldval = {
@@ -260,7 +257,6 @@ class SequencePacker(ABC):
                     "labels": None,
                     "cu_seqlens": cu_seq_lens,
                     "max_seqlen": max_seq_lens,
-                    "used_seqlens": used_seqlens,
                 }
             else:
                 (masked_batch, labels) = SequencePacker.mlm_masking(
@@ -271,7 +267,6 @@ class SequencePacker(ABC):
                     "labels": torch.from_numpy(labels),
                     "cu_seqlens": cu_seq_lens,
                     "max_seqlen": max_seq_lens,
-                    "used_seqlens": used_seqlens,
                     "attention_mask": torch.from_numpy(np.where(batch == self.pad_token_id, 0, 1)),
                 }
                 self._token_count += yieldval["attention_mask"].sum().item()
@@ -491,6 +486,13 @@ class BufferedIterable(Generic[T]):
     def __iter__(self):
         return BufferedIterator(self.iterable, self.buffer_size)
 
+    @property
+    def batch_size(self) -> int:
+        if isinstance(self.iterable, SequencePacker):
+            return self.iterable.out_batch_size
+        else:
+            raise TypeError("Expected a SequencePacker")
+
 
 class BufferedIterator(Generic[T]):
     def __init__(self, iterable: Iterable[T], buffer_size: int):
@@ -535,7 +537,7 @@ class BufferedIterator(Generic[T]):
 
 
 def split_packed_batch(
-    batch: Any, microbatch_size: Union[int, float], padding_tolerance=1.0, mark_dynamic: bool = True
+    batch: Batch, microbatch_size: Union[int, float], padding_tolerance: float = 1.0, mark_dynamic: bool = True
 ) -> Sequence:
     # NOTE: Packed sequences are already packed into a microbatch size worth of tokens.
     # So to correctly return a microbatch worth of data, we will simply return each item (i.e. microbatch_size 1)
@@ -545,7 +547,6 @@ def split_packed_batch(
     split_labels = [x.squeeze() for x in batch["labels"].split(1)]
     split_attention_masks = [x.squeeze() for x in batch["attention_mask"].split(1)]
     split_cu_seqlens = batch["cu_seqlens"]
-    split_used_seqlens = batch["used_seqlens"]
     result = []
     for i in range(num_items):
         attention_mask = split_attention_masks[i]
@@ -556,23 +557,20 @@ def split_packed_batch(
             input_ids = split_inputs[i][: last_non_pad + 1]
             labels = split_labels[i][: last_non_pad + 1]
             cu_seqlens = split_cu_seqlens[i][:-1]
-            used_seqlens = split_used_seqlens[i][:-1]
             attention_mask = attention_mask[: last_non_pad + 1]
         else:
             input_ids = split_inputs[i]
             labels = split_labels[i]
             cu_seqlens = split_cu_seqlens[i]
-            used_seqlens = split_used_seqlens[i]
         if mark_dynamic:
             torch._dynamo.mark_dynamic(cu_seqlens, index=0)
         result.append(
             {
-                "input_ids": input_ids.unsqueeze(0),
-                "labels": labels.unsqueeze(0),
+                "input_ids": input_ids,
+                "labels": labels,
                 "cu_seqlens": cu_seqlens,
                 "max_seqlen": batch["max_seqlen"][i],
-                "attention_mask": attention_mask.unsqueeze(0),
-                "used_seqlens": used_seqlens,
+                "attention_mask": attention_mask,
             }
         )
 
@@ -580,12 +578,22 @@ def split_packed_batch(
     return result
 
 
+def get_num_tokens_in_packed_batch(batch: Batch, ignore_index: int = -100) -> int:
+    labels: torch.Tensor | list[torch.Tensor] = batch["labels"]
+    if isinstance(labels, torch.Tensor):
+        return (labels != ignore_index).sum().item()
+    elif isinstance(labels, list):
+        return sum([(x != ignore_index).sum().item() for x in labels])
+    else:
+        raise TypeError('Expected a batch with a "labels" key of type list[Tensor] or Tensor')
+
+
 def get_num_samples_in_packed_batch(batch: Batch) -> int:
     # Number of sequences can be inferred from cu_seqlens arrays
-    cu_seqlens = batch["cu_seqlens"]
+    cu_seqlens: torch.Tensor | list[torch.Tensor] = batch["cu_seqlens"]
     if isinstance(cu_seqlens, torch.Tensor):
         return cu_seqlens.size()[0] - 1
     elif isinstance(cu_seqlens, list):
         return sum([x.size()[0] - 1 for x in batch["cu_seqlens"]])
     else:
-        raise TypeError('Expected a batch with a "cu_seqlens" key of type list or Tensor')
+        raise TypeError('Expected a batch with a "cu_seqlens" key of type list[Tensor] or Tensor')
