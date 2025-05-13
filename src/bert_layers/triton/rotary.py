@@ -81,7 +81,6 @@ def rotary_kernel(
     )
 
 
-@torch.library.custom_op("modernbert::apply_rotary", mutates_args={"x"}, device_types="cuda")
 def apply_rotary(
     x: Tensor,
     cos: Tensor,
@@ -130,7 +129,7 @@ def apply_rotary(
     # Need this, otherwise Triton tries to launch from cuda:0 and we get
     # ValueError: Pointer argument (at 0) cannot be accessed from Triton (cpu tensor?)
     with torch.cuda.device(x.device.index):
-        rotary_kernel[grid](
+        torch.library.wrap_triton(rotary_kernel)[grid](
             output,  # data ptrs
             x,
             cos,
@@ -149,18 +148,6 @@ def apply_rotary(
             conjugate,
             BLOCK_M,
         )
-
-
-@apply_rotary.register_fake
-def _(
-    x: Tensor,
-    cos: Tensor,
-    sin: Tensor,
-    cu_seqlens: Optional[Tensor] = None,
-    max_seqlen: Optional[int] = None,
-    conjugate: bool = False,
-) -> None:
-    pass
 
 
 class ApplyRotaryEmbUnpad(torch.autograd.Function):
@@ -182,7 +169,7 @@ class ApplyRotaryEmbUnpad(torch.autograd.Function):
             # dimensions, we get the same tensor
             # qk = rearrange(qkv[:, :2], "b_s t h d -> b_s (t h) d")
             qk = qkv[:, :2].view(total_nnz, -1, headdim)
-            torch.ops.modernbert.apply_rotary(
+            apply_rotary(
                 qk,
                 cos,
                 sin,
@@ -191,14 +178,14 @@ class ApplyRotaryEmbUnpad(torch.autograd.Function):
             )
         else:
             q, k = qkv[:, 0, :, :], qkv[:, 1, :, :]
-            torch.ops.modernbert.apply_rotary(
+            apply_rotary(
                 q,
                 cos,
                 sin,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
             )
-            torch.ops.modernbert.apply_rotary(
+            apply_rotary(
                 k,
                 cos,
                 sin,
@@ -219,7 +206,7 @@ class ApplyRotaryEmbUnpad(torch.autograd.Function):
             # We need dqkv to be contiguous so that when we reshape to combine (3, nheads)
             # dimensions, we get the same tensor
             dqk = do[:, :2].view(total_nnz, -1, headdim)
-            torch.ops.modernbert.apply_rotary(
+            apply_rotary(
                 dqk,
                 cos,
                 sin,
@@ -229,7 +216,7 @@ class ApplyRotaryEmbUnpad(torch.autograd.Function):
             )
         else:
             dq, dk = do[:, 0, :, :], do[:, 1, :, :]
-            torch.ops.modernbert.apply_rotary(
+            apply_rotary(
                 dq,
                 cos,
                 sin,
@@ -237,7 +224,7 @@ class ApplyRotaryEmbUnpad(torch.autograd.Function):
                 max_seqlen=ctx.max_seqlen,
                 conjugate=True,
             )
-            torch.ops.modernbert.apply_rotary(
+            apply_rotary(
                 dk,
                 cos,
                 sin,
