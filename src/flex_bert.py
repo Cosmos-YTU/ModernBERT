@@ -296,7 +296,10 @@ def create_flex_bert_mlm(
 
     eval_metrics = copy.deepcopy(metrics)
     if disable_train_metrics:
-        metrics = None
+        new_metrics = [m for m in metrics if isinstance(m, (EfficientCrossEntropy, EfficientZLoss))]
+        metrics = new_metrics
+        if len(metrics) == 0:
+            metrics = None
 
     hf_model = EfficientHuggingFaceModel(
         model=model,
