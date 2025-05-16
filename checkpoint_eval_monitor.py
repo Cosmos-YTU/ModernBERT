@@ -93,7 +93,7 @@ def find_new_checkpoints(files_in_repo: list[str], processed: Set[str]) -> Set[s
     """
     new_ckpts = set()
     for f in files_in_repo:
-        if f.endswith(".pt") and "rank" in f and f not in processed:
+        if f.endswith(".pt") and "rank" in f and f not in processed and 'latest' not in f:
             new_ckpts.add(f)
     return new_ckpts
 
