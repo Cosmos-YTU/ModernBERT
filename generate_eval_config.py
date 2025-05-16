@@ -234,6 +234,7 @@ def main(
     seeds: Annotated[List[int], Option(help="List of seeds to use for the eval", rich_help_panel="Task Settings")] = [1618, 42, 6033, 3145],
     gpu_ids: Annotated[List[int], Option(help="List of GPU IDs to use for the eval", rich_help_panel="Task Settings")] = [0],
     parallel: Annotated[bool, Option("--parallel/--single", help="Run the evals in parallel on multiple GPUs or one GPU. Only use if evaluating a single checkpoint on multiple GPUs.", rich_help_panel="Task Settings")] = False,
+    eval_batch_count: Annotated[Optional[int], Option(help="Number of batches to evaluate", rich_help_panel="Task Settings")] = None,
     config: Annotated[Optional[Path], Option(callback=conf_callback, is_eager=True, help="Relative path to YAML config file for setting options. Passing CLI options will supersede config options.", case_sensitive=False, rich_help_panel="Options")] = None,
 ):  # fmt: skip
     # Read the input YAML file
@@ -314,6 +315,8 @@ def main(
     else:
         base_run_name = safe_get(input_config, "run_name", ckpt_path.name)
     new_config["base_run_name"] = base_run_name
+    if eval_batch_count is not None:
+        new_config["base_run_name"] = f"{base_run_name}-{eval_batch_count}"
 
     new_config["default_seed"] = 19
     new_config["precision"] = safe_get(input_config, "precision")
@@ -410,7 +413,7 @@ def main(
             task_config["trainer_kwargs"] = {
                 "save_num_checkpoints_to_keep": 1, 
                 "max_duration": "2ep",
-                "batch_size": 2,
+                "batch_size": 64,
                 "device_train_microbatch_size": "auto",
             }
 

@@ -110,6 +110,9 @@ def poll_loop(
     gpu_ids: List[int],
     skip_generation: bool,
     train_config: Optional[Path],
+    wandb_run: Optional[str] = None,
+    track_run: bool = True,
+    track_run_project: Optional[str] = None,
 ):
     """
     Main polling loop:
@@ -134,7 +137,8 @@ def poll_loop(
                 logger.info("No new checkpoints found.")
             else:
                 for ckpt in new_ckpts:
-                    logger.info(f"Found new checkpoint: {ckpt}")
+                    eval_batch_count = str(ckpt).split('ba')[1].split('-rank0.pt')[0]
+                    logger.info(f"Found new checkpoint: {ckpt} with eval_batch_count: {eval_batch_count}")
                     logger.info("Calling run_evals.programmatic_main(...) on that checkpoint...")
 
                     try:
@@ -149,9 +153,12 @@ def poll_loop(
                             seeds=seeds,
                             skip_generation=skip_generation,
                             gpu_ids=gpu_ids,
+                            eval_batch_count=eval_batch_count,
                             train_config=train_config,
                             verbose=True,
                             parallel=True,
+                            track_run=track_run,
+                            track_run_project=track_run_project,
                         )
                         # Mark it processed
                         processed.add(ckpt)
@@ -172,13 +179,15 @@ def main(
     token: Annotated[Optional[str], Option(help="Optional HF API token for private repos")] = None,
     checkpoint_dir: Annotated[Path, Option(help="Local directory to store or download checkpoints")] = "./checkpoints",
     poll_interval: Annotated[int, Option(help="How many seconds to wait between polls")] = 60,
-    # wandb_run: Annotated[Optional[str], Option(help="Optional W&B run to pass to eval script")] = None,
+    wandb_run: Annotated[Optional[str], Option(help="Optional W&B run to pass to eval script")] = None,
     wandb_project: Annotated[Optional[str], Option(help="Optional W&B project to pass to eval script")] = None,
     wandb_entity: Annotated[Optional[str], Option(help="Optional W&B entity to pass to eval script")] = None,
     tasks: Annotated[List[TaskName], Option(help="Which tasks to evaluate")] = [TaskName.mnli], # type: ignore
     seeds: Annotated[List[int], Option(help="Random seeds to pass to _main")] = [42, 314, 1234],
     gpu_ids: Annotated[Optional[List[int]], Option(help="Optional list of GPU IDs to use for evaluation")] = None,
     skip_generation: Annotated[bool, Option(help="If set, pass skip_generation=True to eval script")] = False,
+    track_run: Annotated[bool, Option(help="Track the eval run with wandb", rich_help_panel="Weights & Biases")] = True,
+    track_run_project: Annotated[Optional[str], Option(help="wandb project for tracking the run", rich_help_panel="Weights & Biases")] = None,
     train_config: Annotated[Optional[Path], Option(help="Path to a .yaml file containing training configuration. If one is not provided, will attempt to load the config from a wandb run or use defaults.", rich_help_panel="Checkpoint & Config Paths")] = None,
     config: Annotated[Optional[Path], Option(callback=conf_callback, is_eager=True, help="Relative path to YAML config file for setting options. Passing CLI options will supersede config options.", case_sensitive=False, rich_help_panel="Options")] = None,
 ):  # fmt: skip
@@ -190,11 +199,13 @@ def main(
         token=token,
         checkpoint_dir=checkpoint_dir,
         poll_interval=poll_interval,
-        # wandb_run=wandb_run,
+        wandb_run=wandb_run,
         wandb_project=wandb_project,
         wandb_entity=wandb_entity,
         tasks=tasks,
         seeds=seeds,
+        track_run=track_run,
+        track_run_project=track_run_project,
         gpu_ids=gpu_ids,
         skip_generation=skip_generation,
         train_config=train_config,

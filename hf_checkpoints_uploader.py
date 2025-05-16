@@ -134,10 +134,10 @@ def conf_callback(ctx: typer.Context, param: typer.CallbackParam, config: Option
 def main(
     repo_id: str = typer.Option(..., help="HF repo to push to, e.g. answerdotai/huge-in-run-checkpoints"),
     base_dir: Path = typer.Option(
-        Path("/mnt/nfs/bert24/checkpoints"), help="Root with model_dir/checkpoints"
+        ..., help="Root with model_dir/checkpoints"
     ),
     model_dirs: List[str] = typer.Option(
-        ["modernbert-huge-pretrain-v1"], help="One or more sub-dirs to watch"
+        ..., help="One or more sub-dirs to watch"
     ),
     token: Optional[str] = typer.Option(None, help="HF token (or set HF_TOKEN env var)"),
     poll_interval: int = typer.Option(60, help="Seconds between scans after catch-up"),

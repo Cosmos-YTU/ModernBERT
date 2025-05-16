@@ -4,16 +4,19 @@
 import os
 import random
 import re
+import shutil
 import signal
 import subprocess
 import tempfile
 import time
 import warnings
+
 from collections import deque
 from enum import Enum
 from multiprocessing import Process, Queue
 from pathlib import Path
 from typing import Annotated, List, Optional
+
 
 import datasets
 import psutil
@@ -402,6 +405,7 @@ def generate_eval_configs(
     pooling_type: Optional[str],
     head_class_act: Optional[str],
     head_class_norm: Optional[str],
+    eval_batch_count: Optional[str],
     head_class_dropout: float,
     tasks: Optional[List[TaskName]],  # type: ignore
     fast_ultrafeedback: bool,
@@ -481,6 +485,9 @@ def generate_eval_configs(
 
         if parallel:
             cmd.append("--parallel")
+
+        if eval_batch_count:
+            cmd.extend(["--eval-batch-count", str(eval_batch_count)])
 
         if gpu_ids:
             if isinstance(gpu_ids, int):
@@ -675,6 +682,7 @@ def main(
     delete_eval_yamls: Annotated[bool, Option("--delete/--keep", help="Delete all evaluation YAML files after running the evals. Use `delete_eval_yamls` if passing to `config`", rich_help_panel="Config Options")] = False,
     use_dir_names: Annotated[Optional[bool], Option("--use-dir-names", help="Use the folder names as the wandb run names. Defaults to true if multiple `checkpoints` are provided with one `train_config`", rich_help_panel="Config Options")] = None,
     gpu_ids: Annotated[Optional[List[int]], Option(help="List of GPU IDs to use", rich_help_panel="GPU Options")] = None,
+    eval_batch_count: Annotated[Optional[int], Option("--eval-batch-count", help="Number of batches to evaluate", rich_help_panel="Task Settings")] = None,
     config: Annotated[Optional[Path], Option(callback=conf_callback, is_eager=True, help="Relative path to YAML config file for setting options. Passing CLI options will supersede config options.", case_sensitive=False, rich_help_panel="Options")] = None,
 ):  # fmt: skip
     """Run evaluations on model checkpoints."""
@@ -738,6 +746,7 @@ def main(
             tasks=tasks,
             fast_ultrafeedback=fast_ultrafeedback,
             seeds=seeds,
+            eval_batch_count=eval_batch_count,
             parallel=parallel,
             use_dir_names=use_dir_names,
             model_size=model_size,
@@ -782,16 +791,21 @@ def main(
     else:
         console.print("[bold green]All jobs completed.")
 
+    shutil.rmtree("./checkpoints", ignore_errors=True)
+    shutil.rmtree("./finetuned-checkpoints", ignore_errors=True)
+
 
 # Register the signal handler
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
+# Recursively delete ./checkpoints and ignore any problems.
+
 if __name__ == "__main__":
     try:
         app()
     finally:
-        # Ensure all subprocesses are terminated when the script exits
+        # Ensure all subprocesses are terminated when the script exits 
         for process in all_processes:
             if process.poll() is None:
                 process.terminate()
