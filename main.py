@@ -498,9 +498,17 @@ def main(cfg: DictConfig, return_trainer: bool = False, do_train: bool = True) -
         print("Starting training...")
         # this section is intended to use when resuming from a checkpoint where one wants to change
         # the learning rate and weight deacy. It's only been tested with the warmup_stable_decay scheduler
-        if cfg.get("restart_override", False):
+        if cfg.get("mid_training_restart", False) and not cfg.get("new_opt_hypers_or_lr_sched", False):
+            warnings.warn(
+                "You are restarting training with the same optimizer and learning rate schedule.\n"
+                "This is not recommended unless you are sure you want to continue training with\n"
+                "the same optimizer hyperparameters and learning rate schedule. To continue\n"
+                "training with new optimizer hyperparameters and/or learning rate schedule, set\n"
+                "`new_opt_hypers_or_lr_sched` to True in addition to `mid_training_restart`."
+            )
+        if cfg.get("new_opt_hypers_or_lr_sched", False):
             print("Overriding checkpoint's scheduler & optimizer LR & WD, and train microbatch size with config options")  # fmt: skip
-            if cfg.scheduler.name not in ["constant_with_warmup", "warmup_stable_decay"]:
+            if cfg.scheduler.name not in ["constant_with_warmup", "warmup_stable_decay"] and cfg.get("mid_training_restart", False):  # fmt: skip
                 print("Rescaling current step LR by ratio of new LR to old LR. This may require scaling the scheduler's alpha_f")  # fmt: skip
                 for param_group in trainer.state.optimizers[0].param_groups:
                     lr_ratio = cfg.optimizer.lr / param_group["lr"]
