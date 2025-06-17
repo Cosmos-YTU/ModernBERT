@@ -15,6 +15,7 @@ from torch import nn
 
 from src.bert_layers.configuration_bert import FlexBertConfig
 from src.bert_layers.model import init_mlm_model_from_pretrained
+from src.callbacks.masking_ratio import MaskingRatio
 
 # Add folder root to path to allow us to use relative imports regardless of what directory the script is run from
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
@@ -174,6 +175,8 @@ def build_callback(name, kwargs):
         return DataloaderSpeedMonitor()
     elif name == "packing_efficiency":
         return PackingEfficency(log_interval=kwargs.get("log_interval", 10))
+    elif name == "masking_ratio":
+        return MaskingRatio(log_interval=kwargs.get("log_interval", 10))
     else:
         raise ValueError(f"Not sure how to build callback: {name}")
 

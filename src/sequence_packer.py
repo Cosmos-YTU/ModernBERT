@@ -6,6 +6,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import deque
+from enum import Enum
 from typing import Any, Generic, Iterable, NamedTuple, Optional, Sequence, TypeVar, Union
 
 import numpy as np
@@ -13,6 +14,11 @@ import torch
 from composer.core import Time
 from composer.core.types import Batch
 from numba import njit
+
+
+class MaskingSchedule(str, Enum):
+    LINEAR = "linear"
+    STAIR = "stair"
 
 
 class BatchSizeWarmupScheduler:
@@ -59,6 +65,78 @@ class BatchSizeWarmupScheduler:
         return self.max_batch_size
 
 
+class MaskingRatioCooldownScheduler:
+    def __init__(
+        self,
+        initial_masking_ratio: float,
+        final_masking_ratio: float,
+        cooldown_tokens: Union[str, Time, int],
+        cooldown_start_tokens: Union[str, Time, int] = 0,
+        schedule_type: MaskingSchedule = MaskingSchedule.LINEAR,
+        masking_ratio_step_size: Optional[float] = None,
+        world_size: int = 1,
+    ):
+        self.initial_masking_ratio = initial_masking_ratio
+        self.final_masking_ratio = final_masking_ratio
+        self.schedule_type = schedule_type
+        self.masking_ratio_step_size = masking_ratio_step_size
+        self.num_cooldown_steps = None
+
+        if self.schedule_type == MaskingSchedule.STAIR:
+            if self.masking_ratio_step_size is None:
+                raise ValueError("`masking_ratio_step_size` must be provided for 'stair schedule.")
+            if self.masking_ratio_step_size <= 0:
+                raise ValueError("`masking_ratio_step_size` must be positive.")
+            if self.initial_masking_ratio > self.final_masking_ratio:
+                self.num_cooldown_steps = math.ceil(
+                    (self.initial_masking_ratio - self.final_masking_ratio) / self.masking_ratio_step_size
+                )
+            else:
+                self.num_cooldown_steps = 0
+
+        if isinstance(cooldown_start_tokens, str):
+            self.cooldown_start_tokens = Time.from_timestring(cooldown_start_tokens).value
+        elif isinstance(cooldown_start_tokens, Time):
+            self.cooldown_start_tokens = cooldown_start_tokens.value
+        else:
+            self.cooldown_start_tokens = cooldown_start_tokens
+        self.cooldown_start_tokens = math.ceil(self.cooldown_start_tokens / world_size)
+
+        if isinstance(cooldown_tokens, str):
+            self.cooldown_tokens = Time.from_timestring(cooldown_tokens).value
+        elif isinstance(cooldown_tokens, Time):
+            self.cooldown_tokens = cooldown_tokens.value
+        else:
+            self.cooldown_tokens = cooldown_tokens
+        self.cooldown_tokens = math.ceil(self.cooldown_tokens / world_size)
+
+        if self.cooldown_tokens < 1:
+            raise ValueError("`cooldown_tokens` divided by world_size must be greater than 1.")
+
+        self.cooldown_end_tokens = self.cooldown_start_tokens + self.cooldown_tokens
+
+    def __call__(self, current_tokens: int) -> float:
+        if current_tokens < self.cooldown_start_tokens:
+            return self.initial_masking_ratio
+        if current_tokens >= self.cooldown_end_tokens:
+            return self.final_masking_ratio
+
+        progress = (current_tokens - self.cooldown_start_tokens) / self.cooldown_tokens
+
+        if self.schedule_type == MaskingSchedule.LINEAR:
+            current_masking_ratio = self.initial_masking_ratio - progress * (
+                self.initial_masking_ratio - self.final_masking_ratio
+            )
+        elif self.schedule_type == MaskingSchedule.STAIR:
+            if self.num_cooldown_steps is None or self.masking_ratio_step_size is None:
+                raise ValueError("`num_cooldown_steps` and `masking_ratio_step_size` must be set for stair.")
+            step = math.floor(progress * self.num_cooldown_steps)
+            current_masking_ratio = self.initial_masking_ratio - step * self.masking_ratio_step_size
+        else:
+            raise ValueError(f"Unknown schedule type: {self.schedule_type}")
+        return max(current_masking_ratio, self.final_masking_ratio)
+
+
 class SequencePackerBatchOutputTuple(NamedTuple):
     masked_pseqs: torch.Tensor
     labels: Optional[torch.Tensor]
@@ -86,6 +164,11 @@ class SequencePacker(ABC):
         suppress_masking: bool = False,
         batch_size_warmup_min_size: Optional[int] = None,
         batch_size_warmup_tokens: Optional[Union[str, Time]] = None,
+        masking_ratio_cooldown_tokens: Optional[Union[str, Time]] = None,
+        masking_ratio_cooldown_start_tokens: Optional[Union[str, Time]] = None,
+        final_masking_ratio: Optional[float] = None,
+        masking_cooldown_schedule_type: Union[str, MaskingSchedule] = "linear",
+        masking_ratio_step_size: Optional[float] = None,
         world_size: int = 1,
     ):
         """
@@ -128,6 +211,16 @@ class SequencePacker(ABC):
 
             batch_size_warmup_tokens: If not None, the sequence packer will gradually increase the batch size from batch_size_warmup_min_size to out_batch_size over the course of the warmup_tokens.
 
+            masking_ratio_cooldown_tokens: If not None, the sequence packer will gradually decrease the masking ratio from mask_prob to final_masking_ratio over the course of the cooldown_tokens.
+
+            masking_ratio_cooldown_start_tokens: The number of tokens to wait before starting the masking ratio cooldown.
+
+            final_masking_ratio: The final masking ratio to cooldown to.
+
+            masking_cooldown_schedule_type: The type of cooldown schedule to use for the masking ratio. Can be 'linear' or 'stair'.
+
+            masking_ratio_step_size: The step size for the `stair` cooldown schedule, in percentage terms (e.g., 0.05 for 5%).
+
             world_size: The number of processes participating in this training run. batch_size_warmup_min_size is divided by this number.
         """
         assert buffer_size >= out_batch_size, f"required that {buffer_size=} >= {out_batch_size=}"
@@ -158,6 +251,17 @@ class SequencePacker(ABC):
             )
         else:
             self.batch_size_scheduler = None
+        self.masking_ratio_scheduler = None
+        if masking_ratio_cooldown_tokens is not None and final_masking_ratio is not None:
+            self.masking_ratio_scheduler = MaskingRatioCooldownScheduler(
+                initial_masking_ratio=self.mask_prob,
+                final_masking_ratio=final_masking_ratio,
+                cooldown_tokens=masking_ratio_cooldown_tokens,
+                cooldown_start_tokens=masking_ratio_cooldown_start_tokens or 0,
+                schedule_type=MaskingSchedule(masking_cooldown_schedule_type),
+                masking_ratio_step_size=masking_ratio_step_size,
+                world_size=world_size,
+            )
 
     @property
     def seqs_emitted(self):
@@ -259,8 +363,11 @@ class SequencePacker(ABC):
                     "max_seqlen": max_seq_lens,
                 }
             else:
+                mask_prob = self.mask_prob
+                if self.masking_ratio_scheduler:
+                    mask_prob = self.masking_ratio_scheduler(self._token_count)
                 (masked_batch, labels) = SequencePacker.mlm_masking(
-                    batch, self.mask_prob, self.mask_token_id, self.pad_token_id, self.ignore_token_id, self.np_rng
+                    batch, mask_prob, self.mask_token_id, self.pad_token_id, self.ignore_token_id, self.np_rng
                 )
                 yieldval = {
                     "input_ids": torch.from_numpy(masked_batch),
@@ -269,6 +376,8 @@ class SequencePacker(ABC):
                     "max_seqlen": max_seq_lens,
                     "attention_mask": torch.from_numpy(np.where(batch == self.pad_token_id, 0, 1)),
                 }
+                if self.masking_ratio_scheduler:
+                    yieldval["mask_prob"] = torch.tensor(mask_prob, dtype=torch.float32)
                 self._token_count += yieldval["attention_mask"].sum().item()
             # # assert isinstance(yieldval[0], torch.Tensor), f"Unexpected {type(yieldval[0])=}"
             # if not self.suppress_masking:
@@ -392,6 +501,11 @@ class GreedyBestFitSequencePacker(SequencePacker):
         suppress_masking=False,
         batch_size_warmup_min_size: Optional[int] = None,
         batch_size_warmup_tokens: Optional[Union[str, Time]] = None,
+        masking_ratio_cooldown_tokens: Optional[Union[str, Time]] = None,
+        masking_ratio_cooldown_start_tokens: Optional[Union[str, Time]] = None,
+        final_masking_ratio: Optional[float] = None,
+        masking_cooldown_schedule_type: Union[str, MaskingSchedule] = "linear",
+        masking_ratio_step_size: Optional[float] = None,
         world_size: int = 1,
     ) -> "GreedyBestFitSequencePacker":
         if batch_size_warmup_min_size is not None:
@@ -417,6 +531,11 @@ class GreedyBestFitSequencePacker(SequencePacker):
             suppress_masking=suppress_masking,
             batch_size_warmup_min_size=batch_size_warmup_min_size,
             batch_size_warmup_tokens=batch_size_warmup_tokens,
+            masking_ratio_cooldown_tokens=masking_ratio_cooldown_tokens,
+            masking_ratio_cooldown_start_tokens=masking_ratio_cooldown_start_tokens,
+            final_masking_ratio=final_masking_ratio,
+            masking_cooldown_schedule_type=masking_cooldown_schedule_type,
+            masking_ratio_step_size=masking_ratio_step_size,
             world_size=world_size,
         )
 
@@ -564,15 +683,16 @@ def split_packed_batch(
             cu_seqlens = split_cu_seqlens[i]
         if mark_dynamic:
             torch._dynamo.mark_dynamic(cu_seqlens, index=0)
-        result.append(
-            {
-                "input_ids": input_ids,
-                "labels": labels,
-                "cu_seqlens": cu_seqlens,
-                "max_seqlen": batch["max_seqlen"][i],
-                "attention_mask": attention_mask,
-            }
-        )
+        microbatch = {
+            "input_ids": input_ids,
+            "labels": labels,
+            "cu_seqlens": cu_seqlens,
+            "max_seqlen": batch["max_seqlen"][i],
+            "attention_mask": attention_mask,
+        }
+        if "mask_prob" in batch:
+            microbatch["mask_prob"] = batch["mask_prob"].clone()
+        result.append(microbatch)
 
     assert all([x["input_ids"].shape[-1] == y["cu_seqlens"][-1] for x, y in zip(result, result)])
     return result

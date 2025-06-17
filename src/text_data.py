@@ -415,6 +415,11 @@ def build_text_dataloader(
             batch_size_warmup_min_size=cfg.get("batch_size_warmup_min_size", None),
             batch_size_warmup_tokens=cfg.get("batch_size_warmup_tokens", None),
             world_size=dist.get_world_size(),
+            masking_ratio_cooldown_tokens=cfg.get("masking_ratio_cooldown_tokens", None),
+            masking_ratio_cooldown_start_tokens=cfg.get("masking_ratio_cooldown_start_tokens", None),
+            final_masking_ratio=cfg.get("final_masking_ratio", None),
+            masking_cooldown_schedule_type=cfg.get("masking_cooldown_schedule_type", "linear"),
+            masking_ratio_step_size=cfg.get("masking_ratio_step_size", None),
         )
         return BufferedIterable(sequence_packer, buffer_size=cfg.get("packing_prefetch_factor", 5))
     else:
