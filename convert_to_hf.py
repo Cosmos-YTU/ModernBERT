@@ -55,7 +55,10 @@ def update_config(
         "layer_norm_eps": source_config["norm_kwargs"]["eps"],
         "local_attention": source_config["sliding_window"],
         "local_rope_theta": source_config["local_attn_rotary_emb_base"]
-        if source_config["local_attn_rotary_emb_base"]
+        if (
+            source_config["local_attn_rotary_emb_base"]
+            and source_config["local_attn_rotary_emb_base"] != -1
+        )
         else source_config["rotary_emb_base"],
         "max_position_embeddings": max_length,  # Override with first config value
         "mlp_bias": source_config["mlp_in_bias"],
