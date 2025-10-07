@@ -1,4 +1,4 @@
-data_local: data_folder
+data_local: fineweb-2-turkish
 data_remote: # If blank, files must be present in data_local
 
 max_seq_len: 1024
@@ -16,7 +16,7 @@ model:
   tokenizer_name: ${tokenizer_name}
   disable_train_metrics: true # save some time by not computing metrics on the training set
   model_config:
-    vocab_size: 50368
+    vocab_size: 32000
     init_method: full_megatron
     num_hidden_layers: 22
     hidden_size: 768
@@ -65,7 +65,7 @@ train_loader:
   dataset:
     local: ${data_local}
     remote: ${data_remote}
-    split: train
+    split: train_small
     tokenizer_name: ${tokenizer_name}
     max_seq_len: ${max_seq_len}
     shuffle: true
@@ -73,7 +73,7 @@ train_loader:
     streaming: true
   drop_last: true
   num_workers: 6
-  sequence_packing: true
+  sequence_packing: false
   batch_size_warmup_min_size: ${device_train_microbatch_size}
   batch_size_warmup_tokens: 10_000_000tok  # 10M tokens for small dataset
 
@@ -151,3 +151,6 @@ save_folder: checkpoints/{run_name}
 
 # Load from local filesystem or remote object store to
 # load_path: null
+
+# Autoresume settings
+autoresume: true  # Automatically resume from latest checkpoint if exists
