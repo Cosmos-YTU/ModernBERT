@@ -154,7 +154,7 @@ fineweb2constants.splits["val_small"] = DataSplitConstants(
     hf_split="test", folder_split="val_small", raw_samples=36146, truncated_samples=10000
 )
 
-CONSTS = {"c4": c4constants, "the_pile": pileconstants, "fineweb-2": fineweb2constants}
+CONSTS = {"c4": c4constants, "the_pile": pileconstants, "HuggingFaceFW/fineweb-2": fineweb2constants}
 
 
 class NoConcatDataset(IterableDataset):
@@ -382,7 +382,7 @@ def main(args: Namespace) -> None:
         dataset_constants = CONSTS[args.dataset]
     except KeyError:
         raise ValueError(
-            f'Constants for dataset "{args.dataset}" not found. Currently only "the_pile", "c4", and "fineweb-2" are supported.'
+            f'Constants for dataset "{args.dataset}" not found. Currently only "the_pile", "c4", and "HuggingFaceFW/fineweb-2" are supported.'
         )
 
     if args.concat_tokens is not None:
