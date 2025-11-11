@@ -41,7 +41,7 @@ from composer.callbacks import (
     RuntimeEstimator,
     SpeedMonitor,
 )
-from composer.loggers import WandBLogger
+from composer.loggers import TensorboardLogger, WandBLogger
 from composer.optim.scheduler import (
     ConstantWithWarmupScheduler,
     CosineAnnealingWithWarmupScheduler,
@@ -112,6 +112,8 @@ def build_callback(name, kwargs):
 def build_logger(name, kwargs):
     if name == "wandb":
         return WandBLogger(**kwargs)
+    elif name == "tensorboard":
+        return TensorboardLogger(**kwargs)
     else:
         raise ValueError(f"Not sure how to build logger: {name}")
 
