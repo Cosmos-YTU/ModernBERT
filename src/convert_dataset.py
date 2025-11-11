@@ -142,19 +142,32 @@ fineweb2constants = DatasetConstants(
     chars_per_token=4,  # Standard estimate
 )
 fineweb2constants.splits["train"] = DataSplitConstants(
-    hf_split="train", folder_split="train", raw_samples=95129129, truncated_samples=None
+    hf_split="train", folder_split="train", raw_samples=95_129_129, truncated_samples=None
 )
 fineweb2constants.splits["train_small"] = DataSplitConstants(
-    hf_split="train", folder_split="train_small", raw_samples=95129129, truncated_samples=100000
+    hf_split="train", folder_split="train_small", raw_samples=95_129_129, truncated_samples=100000
 )
 fineweb2constants.splits["val"] = DataSplitConstants(
-    hf_split="test", folder_split="val", raw_samples=36146, truncated_samples=None  # Using test split as validation
+    hf_split="test", folder_split="val", raw_samples=36_146, truncated_samples=None  # Using test split as validation
 )
 fineweb2constants.splits["val_small"] = DataSplitConstants(
-    hf_split="test", folder_split="val_small", raw_samples=36146, truncated_samples=10000
+    hf_split="test", folder_split="val_small", raw_samples=36_146, truncated_samples=10000
 )
 
-CONSTS = {"c4": c4constants, "the_pile": pileconstants, "HuggingFaceFW/fineweb-2": fineweb2constants}
+
+berturkcorpusconstants = DatasetConstants(
+    chars_per_sample=600,
+    chars_per_token=4,
+)
+berturkcorpusconstants.splits["train"] = DataSplitConstants(
+    hf_split="train", folder_split="train", raw_samples=39_250_000, truncated_samples=None
+)
+berturkcorpusconstants.splits["val"] = DataSplitConstants(
+    hf_split="test", folder_split="val", raw_samples=35_437, truncated_samples=None
+)
+
+
+CONSTS = {"c4": c4constants, "the_pile": pileconstants, "HuggingFaceFW/fineweb-2": fineweb2constants, "ytu-ce-cosmos/berturk-corpus-splitted": berturkcorpusconstants}
 
 
 class NoConcatDataset(IterableDataset):
@@ -382,7 +395,7 @@ def main(args: Namespace) -> None:
         dataset_constants = CONSTS[args.dataset]
     except KeyError:
         raise ValueError(
-            f'Constants for dataset "{args.dataset}" not found. Currently only "the_pile", "c4", and "HuggingFaceFW/fineweb-2" are supported.'
+            f'Constants for dataset "{args.dataset}" not found. Currently only {list(CONSTS.keys())} are supported.'
         )
 
     if args.concat_tokens is not None:

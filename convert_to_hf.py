@@ -34,7 +34,6 @@ def update_config(
         "architectures": ["ModernBertForMaskedLM"],
         "attention_bias": source_config["attn_out_bias"],
         "attention_dropout": source_config["attention_probs_dropout_prob"],
-        "bos_token_id": bos_token_id,
         "classifier_activation": source_config.get("head_class_act", source_config["hidden_act"]),
         "classifier_bias": source_config["head_class_bias"],
         "classifier_dropout": source_config["head_class_dropout"],
@@ -43,7 +42,6 @@ def update_config(
         "decoder_bias": source_config["decoder_bias"],
         "deterministic_flash_attn": source_config["deterministic_fa2"],
         "embedding_dropout": source_config["embed_dropout_prob"],
-        "eos_token_id": eos_token_id,
         "global_attn_every_n_layers": source_config["global_attn_every_n_layers"],
         "global_rope_theta": source_config["rotary_emb_base"],
         "gradient_checkpointing": source_config["gradient_checkpointing"],
@@ -76,6 +74,13 @@ def update_config(
         "transformers_version": "4.48.0",
         "vocab_size": source_config["vocab_size"],
     }
+
+    # Only add bos_token_id and eos_token_id if they're not -1 (i.e., not None)
+    if bos_token_id != -1:
+        target_config["bos_token_id"] = bos_token_id
+    if eos_token_id != -1:
+        target_config["eos_token_id"] = eos_token_id
+
     return target_config
 
 
@@ -84,12 +89,12 @@ def main(
     output_name: Annotated[str, Option(help="Name of the output model", show_default=False)],
     output_dir: Annotated[Path, Option(help="Path to the output directory", show_default=False)],
     input_checkpoint: Annotated[Path, Option(help="Path to the ModernBERT Composer checkpoint file", show_default=False)],
-    bos_token_id: Annotated[int, Option(help="ID of the BOS token. Defaults to the ModernBERT BOS token.")] = 50281,
-    eos_token_id: Annotated[int, Option(help="ID of the EOS token. Defaults to the ModernBERT EOS token.")] = 50282,
-    cls_token_id: Annotated[int, Option(help="ID of the CLS token. Defaults to the ModernBERT CLS token.")] = 50281,
-    sep_token_id: Annotated[int, Option(help="ID of the SEP token. Defaults to the ModernBERT SEP token.")] = 50282,
-    pad_token_id: Annotated[int, Option(help="ID of the PAD token. Defaults to the ModernBERT PAD token.")] = 50283,
-    mask_token_id: Annotated[int, Option(help="ID of the MASK token. Defaults to the ModernBERT MASK token.")] = 50284,
+    pad_token_id: Annotated[int, Option(help="ID of the PAD token. Defaults to 0.")] = 0,
+    bos_token_id: Annotated[int, Option(help="ID of the BOS token.")] = None,
+    eos_token_id: Annotated[int, Option(help="ID of the EOS token.")] = None,
+    cls_token_id: Annotated[int, Option(help="ID of the CLS token. Defaults to 2.")] = 2,
+    sep_token_id: Annotated[int, Option(help="ID of the SEP token. Defaults to 3.")] = 3,
+    mask_token_id: Annotated[int, Option(help="ID of the MASK token. Defaults to 4.")] = 4,
     max_length: Annotated[int, Option(help="Maximum length of the input sequence. Defaults to the final ModernBERT sequence length.")] = 8192,
     torch_dtype: Annotated[TorchDtype, Option(help="Torch dtype to use for the model.")] = TorchDtype.float32,
     pytorch_bin: Annotated[bool, Option(help="Save weights as a pytorch_model.bin file.")] = True,
@@ -116,9 +121,24 @@ def main(
     config_json_path = f"{target_path}/config.json"
     with open(config_json_path, "r") as f:
         config_dict = json.load(f)
+        # Only pass bos_token_id and eos_token_id if they are not None
         config_dict = update_config(
-            config_dict, bos_token_id, eos_token_id, cls_token_id, pad_token_id, sep_token_id, max_length, torch_dtype
+            config_dict,
+            bos_token_id if bos_token_id is not None else -1,
+            eos_token_id if eos_token_id is not None else -1,
+            cls_token_id,
+            pad_token_id,
+            sep_token_id,
+            max_length,
+            torch_dtype
         )
+
+    # Remove bos_token_id and eos_token_id from config if they were None
+    if bos_token_id is None:
+        config_dict.pop("bos_token_id", None)
+    if eos_token_id is None:
+        config_dict.pop("eos_token_id", None)
+
     with open(config_json_path, "w") as f:
         json.dump(config_dict, f, indent=2)
 
@@ -140,9 +160,13 @@ def main(
     with open(tokenizer_config_path, "r") as f:
         config_dict = json.load(f)
     config_dict["model_max_length"] = max_length
-    config_dict["added_tokens_decoder"][str(mask_token_id)]["lstrip"] = True
+    config_dict["pad_token"] = config_dict.get("pad_token", {"content": "<pad>", "single_word": False, "lstrip": False, "rstrip": False, "normalized": True, "special": True})
     config_dict["model_input_names"] = ["input_ids", "attention_mask"]
     config_dict["tokenizer_class"] = "PreTrainedTokenizerFast"
+
+    # Only add mask token if it exists in added_tokens_decoder
+    if str(mask_token_id) in config_dict.get("added_tokens_decoder", {}):
+        config_dict["added_tokens_decoder"][str(mask_token_id)]["lstrip"] = True
 
     if "extra_special_tokens" in config_dict:
         del config_dict["extra_special_tokens"]
@@ -153,7 +177,17 @@ def main(
     special_tokens_path = f"{target_path}/special_tokens_map.json"
     with open(special_tokens_path, "r") as f:
         config_dict = json.load(f)
-    config_dict["mask_token"]["lstrip"] = True
+
+    # Only include tokens that were specified
+    if str(mask_token_id) in config_dict.get("mask_token", {}).get("content", ""):
+        config_dict["mask_token"]["lstrip"] = True
+
+    # Remove optional tokens if not provided
+    if bos_token_id is None:
+        config_dict.pop("bos_token", None)
+    if eos_token_id is None:
+        config_dict.pop("eos_token", None)
+
     with open(special_tokens_path, "w") as f:
         json.dump(config_dict, f, indent=2)
 

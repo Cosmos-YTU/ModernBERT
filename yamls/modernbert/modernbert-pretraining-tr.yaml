@@ -1,13 +1,13 @@
-data_local: fineweb-2-turkish
+data_local: /gpfs/projects/etur22/data/fineweb-2-turkish
 data_remote: # If blank, files must be present in data_local
 
 max_seq_len: 1024
-tokenizer_name: dbmdz/bert-base-turkish-cased
+tokenizer_name: /gpfs/projects/etur22/data/tokenizers/Bert50kTokenizer
 mlm_probability: 0.3 # FlexBERT should use 30% masking for optimal performance
 count_padding_tokens: false
 
 # Run Name
-run_name: modernbert-base-pretrain-tr-small
+run_name: modernbert-base-pretrain-tr-2e4-2epoch-50k-cosine-alpha01-bs256
 
 # Model
 model:
@@ -16,7 +16,7 @@ model:
   tokenizer_name: ${tokenizer_name}
   disable_train_metrics: true # save some time by not computing metrics on the training set
   model_config:
-    vocab_size: 32000
+    vocab_size: 50000
     init_method: full_megatron
     num_hidden_layers: 22
     hidden_size: 768
@@ -65,17 +65,17 @@ train_loader:
   dataset:
     local: ${data_local}
     remote: ${data_remote}
-    split: train_small
+    split: train
     tokenizer_name: ${tokenizer_name}
     max_seq_len: ${max_seq_len}
     shuffle: true
     mlm_probability: ${mlm_probability}
-    streaming: true
+    streaming: false
   drop_last: true
-  num_workers: 6
-  sequence_packing: false
-  batch_size_warmup_min_size: ${device_train_microbatch_size}
-  batch_size_warmup_tokens: 10_000_000tok  # 10M tokens for small dataset
+  num_workers: 4
+  sequence_packing: true
+  batch_size_warmup_min_size: null
+  batch_size_warmup_tokens: null  # 10M tokens for small dataset
 
 
 eval_loader:
@@ -96,14 +96,14 @@ eval_loader:
 
 # Optimization
 scheduler:
-  name: warmup_stable_decay
-  t_warmup: 10_000_000tok  # 10M tokens warmup for small dataset
-  alpha_f: 0.00 # Linearly decay to 0.02x the full LR by the end of the training duration
-  t_decay: 0tok
+  name: cosine_with_warmup
+  t_warmup: 200_000_000tok  # 10M tokens warmup for small dataset
+  alpha_f: 0.1 # Linearly decay to 0.02x the full LR by the end of the training duration
+
 
 optimizer:
   name: decoupled_stableadamw
-  lr: 8e-4 # Peak learning rate
+  lr: 2e-4 # Peak learning rate
   betas:
   - 0.9
   - 0.98
@@ -112,21 +112,20 @@ optimizer:
   filter_bias_norm_wd: true # If True, doesn't apply weight decay to norm layers and biases
   log_grad_norm: true
 
-max_duration: 100_000_000tok  # 100M tokens for small test run
-eval_interval: 500ba  # Evaluate every 500 batches for small dataset
-global_train_batch_size: 4608
+max_duration: 82_000_000_000tok  # 100M tokens for small test run
+eval_interval: 5000ba  # Evaluate every 500 batches for small dataset
+global_train_batch_size: 256
 global_eval_batch_size: 1024
 
 # System
 seed: 17
-device_eval_batch_size: 128
-device_train_microbatch_size: 96
+device_eval_batch_size: 48
+device_train_microbatch_size: 64
 precision: amp_bf16
-
 # Logging
 progress_bar: false
 log_to_console: true
-console_log_interval: 100ba
+console_log_interval: 1000ba
 
 callbacks:
   speed_monitor:
@@ -138,6 +137,10 @@ callbacks:
   packing_efficiency:
     log_interval: 10
 
+loggers:
+  tensorboard:
+    log_dir: /gpfs/projects/etur22/data/tensorboard_logs/
+
 # W&B logging
 # loggers:
 #   wandb:
@@ -145,9 +148,9 @@ callbacks:
 #     entity:
 
 # Checkpoint to local filesystem or remote object store
-save_interval: 500ba  # Save every 500 batches for small dataset
-save_num_checkpoints_to_keep: -1  # Important, this cleans up checkpoints saved to DISK
-save_folder: checkpoints/{run_name}
+save_interval: 24000ba  # Save every 500 batches for small dataset
+save_num_checkpoints_to_keep: 15  # Important, this cleans up checkpoints saved to DISK
+save_folder: /gpfs/projects/etur22/data/checkpoints/{run_name}
 
 # Load from local filesystem or remote object store to
 # load_path: null
