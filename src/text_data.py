@@ -23,7 +23,7 @@ import transformers
 from omegaconf import DictConfig
 from omegaconf import OmegaConf as om
 from streaming import Stream, StreamingDataset
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, ConcatDataset
 from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, PreTrainedTokenizer, PreTrainedTokenizerFast
 from streaming.base.format import reader_from_json
@@ -346,13 +346,26 @@ def build_no_streaming_dataset(
     tokenizer: Tokenizer,
     pad_sequences: bool = True,
 ):
-    return NoStreamingDataset(
-        tokenizer=tokenizer,
-        local=cfg.dataset.get("local", None),
-        split=cfg.dataset.get("split", None),
-        max_seq_len=cfg.dataset.max_seq_len,
-        pad_sequences=pad_sequences,
-    )
+    if cfg.dataset.get("sources"):
+        datasets = []
+        for source_cfg in cfg.dataset.sources:
+            dataset = NoStreamingDataset(
+                tokenizer=tokenizer,
+                local=source_cfg.local,
+                split=source_cfg.get("split", None),
+                max_seq_len=cfg.dataset.max_seq_len,
+                pad_sequences=pad_sequences,
+            )
+            datasets.append(dataset)
+        return ConcatDataset(datasets)
+    else:
+        return NoStreamingDataset(
+            tokenizer=tokenizer,
+            local=cfg.dataset.get("local", None),
+            split=cfg.dataset.get("split", None),
+            max_seq_len=cfg.dataset.max_seq_len,
+            pad_sequences=pad_sequences,
+        )
 
 
 def build_text_dataloader(
@@ -373,7 +386,8 @@ def build_text_dataloader(
         dataset = build_streaming_dataset(cfg, tokenizer, device_batch_size)
         sampler = None
     else:
-        assert cfg.dataset.get("local", None) is not None, "Local path must be provided when not using streaming"
+        assert cfg.dataset.get("local") is not None or cfg.dataset.get("sources") is not None, \
+            "For non-streaming, 'local' or 'sources' must be provided in the dataset config"
         # sequence packing should never use padded sequences, regular dataloaders may if tokenizing on the fly
         dataset = build_no_streaming_dataset(
             cfg, tokenizer=tokenizer, pad_sequences=not cfg.get("sequence_packing", False)
@@ -419,7 +433,7 @@ def build_text_dataloader(
         return BufferedIterable(sequence_packer, buffer_size=cfg.get("packing_prefetch_factor", 5))
     else:
         collate_fn = transformers.DataCollatorForLanguageModeling(
-            tokenizer=dataset.tokenizer, mlm=mlm_probability is not None, mlm_probability=mlm_probability
+            tokenizer=tokenizer, mlm=mlm_probability is not None, mlm_probability=mlm_probability
         )
 
         eos_token_id = cfg.dataset.get("eos_token_id")
@@ -559,7 +573,6 @@ if __name__ == "__main__":
     tokenizer = build_tokenizer(tokenizer_cfg)
 
     loader = build_text_dataloader(cfg, tokenizer, device_batch_size)
-    tokenizer = loader.dataset.tokenizer  # type: ignore
     for batch_ix, batch in enumerate(islice(loader, 5)):
         print("\n")
         print("#" * 20, f"Batch {batch_ix}", "#" * 20)

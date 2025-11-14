@@ -1,0 +1,155 @@
+# data_local and data_remote are now specified within the loader configs
+max_seq_len: 1024
+tokenizer_name: /gpfs/projects/etur22/data/tokenizers/Bert50kTokenizer
+mlm_probability: 0.3 # FlexBERT should use 30% masking for optimal performance
+count_padding_tokens: false
+
+# Run Name
+run_name: modernbert-base-pretrain-combined-tr-2e4-cosine-alpha01
+
+# Model
+model:
+  name: flex_bert
+  pretrained_model_name: bert-base-uncased # has to be set to bert-base-uncased legacy reasons
+  tokenizer_name: ${tokenizer_name}
+  disable_train_metrics: true # save some time by not computing metrics on the training set
+  model_config:
+    vocab_size: 50000
+    init_method: full_megatron
+    num_hidden_layers: 22
+    hidden_size: 768
+    intermediate_size: 1152
+    num_attention_heads: 12 # to have head size of 64
+    attention_layer: rope
+    attention_probs_dropout_prob: 0.0
+    attn_out_bias: false
+    attn_out_dropout_prob: 0.1
+    attn_qkv_bias: false
+    bert_layer: prenorm
+    embed_dropout_prob: 0.0
+    embed_norm: true
+    final_norm: true
+    skip_first_prenorm: true
+    embedding_layer: sans_pos
+    loss_function: fa_cross_entropy
+    loss_kwargs:
+      reduction: mean
+    mlp_dropout_prob: 0.0
+    mlp_in_bias: false
+    mlp_layer: glu
+    mlp_out_bias: false
+    normalization: layernorm
+    norm_kwargs:
+      eps: 1e-5
+      bias: false
+    hidden_act: gelu
+    head_pred_act: gelu
+    activation_function: gelu # better safe than sorry
+    padding: unpadded
+    rotary_emb_dim: null
+    rotary_emb_base: 10000.0
+    rotary_emb_scale_base: null
+    rotary_emb_interleaved: false
+    allow_embedding_resizing: true
+    sliding_window: 128
+    global_attn_every_n_layers: 3
+    unpad_embeddings: true
+    compile_model: true
+    masked_prediction: true
+
+# Dataloaders
+train_loader:
+  name: text
+  dataset:
+    sources:
+      - local: /gpfs/projects/etur22/data/berturk-corpus
+        split: train
+      - local: /gpfs/projects/etur22/data/fineweb-2-turkish
+        split: train
+    tokenizer_name: ${tokenizer_name}
+    max_seq_len: ${max_seq_len}
+    shuffle: true
+    mlm_probability: ${mlm_probability}
+    streaming: false
+  drop_last: true
+  num_workers: 4
+  sequence_packing: true
+  batch_size_warmup_min_size: null
+  batch_size_warmup_tokens: null
+
+
+eval_loader:
+  name: text
+  dataset:
+    sources:
+      - local: /gpfs/projects/etur22/data/berturk-corpus
+        split: val
+      - local: /gpfs/projects/etur22/data/fineweb-2-turkish
+        split: val
+    tokenizer_name: ${tokenizer_name}
+    max_seq_len: ${max_seq_len}
+    shuffle: false
+    mlm_probability: 0.15 # We always evaluate at 15% masking for consistent comparison
+    streaming: false
+  drop_last: false
+  num_workers: 3
+  sequence_packing: false
+
+
+# Optimization
+scheduler:
+  name: cosine_with_warmup
+  t_warmup: 200_000_000tok
+  alpha_f: 0.1
+
+
+optimizer:
+  name: decoupled_stableadamw
+  lr: 2e-4 # Peak learning rate
+  betas:
+  - 0.9
+  - 0.98
+  eps: 1.0e-06
+  weight_decay: 1.0e-5 # Amount of weight decay regularization
+  filter_bias_norm_wd: true # If True, doesn't apply weight decay to norm layers and biases
+  log_grad_norm: true
+
+max_duration: 6_400_000_000tok
+eval_interval: 5000ba
+global_train_batch_size: 384
+global_eval_batch_size: 1024
+
+# System
+seed: 17
+device_eval_batch_size: 48
+device_train_microbatch_size: 48
+precision: amp_bf16
+# Logging
+progress_bar: false
+log_to_console: true
+console_log_interval: 1000ba
+
+callbacks:
+  speed_monitor:
+    window_size: 100
+  lr_monitor: {}
+  scheduled_gc: {}
+  log_grad_norm:
+    batch_log_interval: 10
+  packing_efficiency:
+    log_interval: 10
+
+loggers:
+  tensorboard:
+    log_dir: /gpfs/projects/etur22/data/tensorboard_logs/
+
+# Checkpoint to local filesystem or remote object store
+save_interval: 3000ba
+save_num_checkpoints_to_keep: 15
+save_folder: /gpfs/projects/etur22/data/checkpoints/{run_name}
+
+# Load from local filesystem or remote object store to
+# load_path: null
+
+# Autoresume settings
+autoresume: true
