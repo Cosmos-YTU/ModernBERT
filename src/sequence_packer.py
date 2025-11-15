@@ -184,6 +184,26 @@ class SequencePacker(ABC):
                 self.src_iterable.sampler.set_epoch(self.epoch)
 
     def __iter__(self):
+        # Clean up previous iterator if it exists
+        if hasattr(self, 'src_iterator') and self.src_iterator is not None:
+            # close the iterator gracefully
+            try:
+                while True:
+                    next(self.src_iterator)
+            except StopIteration:
+                pass
+            except Exception:
+                pass
+            finally:
+                self.src_iterator = None
+                
+        import gc
+        gc.collect()
+        
+        # small delay to allow DataLoader workers to terminate
+        # TODO: Better design to avoid this hack
+        time.sleep(0.1)
+        
         self._reset_state()
         self.src_iterator = iter(self.src_iterable)
         return self._generate_batches()
@@ -496,12 +516,13 @@ class BufferedIterator(Generic[T]):
         self.buffer_size = buffer_size
         self.lock = threading.Lock()
         self.exhausted = False
+        self.stop_requested = False
         self.filler_thread = threading.Thread(target=self._background_fill, daemon=True)
         self.filler_thread.start()
 
     def _background_fill(self):
         # Fill up the buffer, whenever possible, in the background
-        while not self.exhausted:
+        while not self.exhausted and not self.stop_requested:
             if len(self.buffer) < self.buffer_size:
                 try:
                     item = next(self.iterator)
@@ -521,6 +542,9 @@ class BufferedIterator(Generic[T]):
             if not self.buffer:
                 if self.exhausted:
                     # We've exhausted the iterator and the buffer so we're done
+                    # Stop the background thread before raising StopIteration
+                    if self.filler_thread.is_alive():
+                        self.filler_thread.join(timeout=10.0)
                     raise StopIteration
                 else:
                     # The buffer is empty but the iterator is not exhausted yet.
