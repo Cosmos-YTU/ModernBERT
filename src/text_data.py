@@ -35,7 +35,7 @@ from transformers.tokenization_utils_base import BatchEncoding
 # Add src folder root to path to allow us to use relative imports regardless of what directory the script is run from
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 
-from src.sequence_packer import BufferedIterable, GreedyBestFitSequencePacker
+from sequence_packer import BufferedIterable, GreedyBestFitSequencePacker
 
 Tokenizer = Union[PreTrainedTokenizer, PreTrainedTokenizerFast]
 
@@ -364,7 +364,7 @@ class PrePackedMLMCollator:
         input_ids_np = input_ids_batch.numpy()
         
         # Apply MLM masking using the SequencePacker.mlm_masking function
-        from src.sequence_packer import SequencePacker
+        from sequence_packer import SequencePacker
         
         masked_input_ids, labels = SequencePacker.mlm_masking(
             input_ids_np,
