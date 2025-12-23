@@ -87,9 +87,9 @@ def test_pack_and_load_dataset():
         # Pack sequences
         eos_token_id = 2
         pad_token_id = 0
-        pack_length = 200  # Small pack length for testing
+        max_seq_len = 200  # Pack to max_seq_len
         
-        packed_sequences = pack_sequences(sequences, pack_length, eos_token_id, pad_token_id)
+        packed_sequences = pack_sequences(sequences, max_seq_len, eos_token_id, pad_token_id)
         print(f"Created {len(packed_sequences)} packed sequences")
         
         # Write packed dataset
@@ -157,7 +157,7 @@ def test_pack_and_load_dataset():
         
         # Verify shapes
         assert batch["input_ids"].shape[0] == batch_size
-        assert batch["input_ids"].shape[1] == pack_length
+        assert batch["input_ids"].shape[1] == max_seq_len
         assert batch["labels"].shape == batch["input_ids"].shape
         assert batch["attention_mask"].shape == batch["input_ids"].shape
         assert len(batch["cu_seqlens"]) == batch_size

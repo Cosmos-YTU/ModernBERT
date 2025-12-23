@@ -40,13 +40,10 @@ python src/pack_dataset.py \
     --output_path /path/to/packed \
     --tokenizer your-tokenizer \
     --max_seq_len 8192 \
-    --pack_length 262144 \
     --split train
 ```
 
-**Pack length calculation**: `pack_length = micro_batch_size * max_seq_len`
-- Example: `96 * 8192 = 786,432` for micro batch size 96 and max seq len 8192
-- Example: `32 * 8192 = 262,144` for micro batch size 32 and max seq len 8192
+The script packs sequences greedily to `max_seq_len`, separating documents with EOS tokens.
 
 ### 3. Configure Training
 
@@ -117,7 +114,7 @@ Pre-packed datasets must:
 
 - Store only `input_ids` as bytes (matching standard MDS format)
 - Separate documents with EOS tokens within each packed sample
-- Be a fixed length per sample (the pack length)
+- Be a fixed length of `max_seq_len` per sample
 - NOT store `cu_seqlens` or `labels` (derived at runtime)
 
 Example packed sample structure:
@@ -197,7 +194,6 @@ python src/pack_dataset.py \
     --output_path /data/berturk-corpus-packed \
     --tokenizer dbmdz/bert-base-turkish-cased \
     --max_seq_len 8192 \
-    --pack_length 262144 \
     --split train
 
 # Pack FineWeb-2-Turkish
@@ -206,7 +202,6 @@ python src/pack_dataset.py \
     --output_path /data/fineweb-2-turkish-packed \
     --tokenizer dbmdz/bert-base-turkish-cased \
     --max_seq_len 8192 \
-    --pack_length 262144 \
     --split train
 ```
 
@@ -244,18 +239,6 @@ tokenizer = AutoTokenizer.from_pretrained("your-tokenizer")
 print(tokenizer.eos_token_id)
 ```
 
-### Different pack_length for different configs
-
-Pack multiple versions with different `pack_length` values for different micro batch sizes:
-
-```bash
-# For micro_batch_size=96
-python src/pack_dataset.py ... --pack_length 786432
-
-# For micro_batch_size=32
-python src/pack_dataset.py ... --pack_length 262144
-```
-
 ### Verify packed data
 
 Load and inspect packed samples:
@@ -271,6 +254,7 @@ shard = reader_from_json("/path/to/packed", "train", obj["shards"][0])
 sample = shard[0]
 input_ids = np.frombuffer(sample["input_ids"], dtype=np.int64)
 print(f"Packed sample length: {len(input_ids)}")
+print(f"Should equal max_seq_len: {len(input_ids) == max_seq_len}")
 print(f"EOS positions: {np.where(input_ids == 2)[0]}")
 ```
 

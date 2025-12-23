@@ -25,8 +25,7 @@ def parse_args():
     parser.add_argument("--input_path", type=str, required=True, help="Path to input tokenized MDS dataset")
     parser.add_argument("--output_path", type=str, required=True, help="Path to output packed MDS dataset")
     parser.add_argument("--tokenizer", type=str, required=True, help="Tokenizer name or path")
-    parser.add_argument("--max_seq_len", type=int, required=True, help="Maximum sequence length")
-    parser.add_argument("--pack_length", type=int, required=True, help="Pack length (typically micro_batch_size * max_seq_len)")
+    parser.add_argument("--max_seq_len", type=int, required=True, help="Maximum sequence length for packing")
     parser.add_argument("--split", type=str, default="train", help="Dataset split to pack")
     return parser.parse_args()
 
@@ -49,32 +48,32 @@ def find_best_fit(remaining_spaces: np.ndarray, seq_len: int) -> int:
     return -1
 
 
-def pack_sequences(sequences: List[np.ndarray], pack_length: int, eos_token_id: int, pad_token_id: int) -> List[np.ndarray]:
+def pack_sequences(sequences: List[np.ndarray], max_seq_len: int, eos_token_id: int, pad_token_id: int) -> List[np.ndarray]:
     """Pack sequences using greedy best-fit algorithm.
     
     Args:
         sequences: List of tokenized sequences to pack
-        pack_length: Target length for each packed sequence
+        max_seq_len: Maximum sequence length for each packed sequence
         eos_token_id: EOS token ID to separate documents
         pad_token_id: Padding token ID
         
     Returns:
-        List of packed sequences, each of length pack_length
+        List of packed sequences, each of length max_seq_len
     """
     packed_sequences = []
     current_batch = []
     remaining_spaces = np.array([], dtype=np.int32)
     
     # Start with at least one packed sequence
-    current_batch.append(np.full(pack_length, pad_token_id, dtype=np.int64))
-    remaining_spaces = np.array([pack_length], dtype=np.int32)
+    current_batch.append(np.full(max_seq_len, pad_token_id, dtype=np.int64))
+    remaining_spaces = np.array([max_seq_len], dtype=np.int32)
     
     for seq in tqdm(sequences, desc="Packing sequences"):
         # Add EOS token to sequence
         seq_with_eos = np.append(seq, eos_token_id).astype(np.int64)
         seq_len = len(seq_with_eos)
         
-        if seq_len > pack_length:
+        if seq_len > max_seq_len:
             # Skip sequences that are too long
             continue
             
@@ -83,15 +82,15 @@ def pack_sequences(sequences: List[np.ndarray], pack_length: int, eos_token_id: 
         
         if best_fit_idx != -1:
             # Fit sequence into existing packed sequence
-            end_pos = pack_length - remaining_spaces[best_fit_idx]
+            end_pos = max_seq_len - remaining_spaces[best_fit_idx]
             current_batch[best_fit_idx][end_pos:end_pos + seq_len] = seq_with_eos
             remaining_spaces[best_fit_idx] -= seq_len
         else:
             # Need a new packed sequence
-            new_packed = np.full(pack_length, pad_token_id, dtype=np.int64)
+            new_packed = np.full(max_seq_len, pad_token_id, dtype=np.int64)
             new_packed[:seq_len] = seq_with_eos
             current_batch.append(new_packed)
-            remaining_spaces = np.append(remaining_spaces, pack_length - seq_len)
+            remaining_spaces = np.append(remaining_spaces, max_seq_len - seq_len)
     
     return current_batch
 
@@ -167,7 +166,7 @@ def main():
     print(f"Read {len(sequences)} non-empty sequences")
     
     # Pack sequences
-    packed_sequences = pack_sequences(sequences, args.pack_length, eos_token_id, pad_token_id)
+    packed_sequences = pack_sequences(sequences, args.max_seq_len, eos_token_id, pad_token_id)
     
     print(f"Created {len(packed_sequences)} packed sequences")
     
