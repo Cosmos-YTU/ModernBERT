@@ -346,14 +346,9 @@ class PrePackedCollator:
             for pos in eos_positions:
                 cu_seq.append(pos.item() + 1)
             
-            # If the last position isn't the end of the sequence, add it
+            # Always add the final position if not already there (matching GreedyBestFitSequencePacker)
             if cu_seq[-1] != seq_len:
-                # Find the last non-pad token position
-                non_pad_mask = batch_input_ids[i] != self.pad_token_id
-                if non_pad_mask.any():
-                    last_non_pad = non_pad_mask.nonzero(as_tuple=True)[0][-1].item() + 1
-                    if last_non_pad > cu_seq[-1]:
-                        cu_seq.append(last_non_pad)
+                cu_seq.append(seq_len)
             
             cu_seqlens.append(torch.tensor(cu_seq, dtype=torch.int32))
             
