@@ -91,7 +91,7 @@ train_loader:
     eos_token_id: 2  # REQUIRED: needed to derive cu_seqlens from packed data
   drop_last: true
   num_workers: 24
-  sequence_packing: false  # NOT needed, data is already pre-packed
+  sequence_packing: false  # Must be false when using pre_packed=true
 
 eval_loader:
   name: text

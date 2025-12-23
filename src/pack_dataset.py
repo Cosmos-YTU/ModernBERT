@@ -139,6 +139,7 @@ def main():
     
     # Read all sequences
     sequences = []
+    truncated_count = 0
     for idx in tqdm(range(total_samples), desc="Reading sequences"):
         shard_id, shard_sample_id = spanner[idx]
         shard = shards[shard_id]
@@ -154,10 +155,14 @@ def main():
         # Truncate to max_seq_len if needed
         if len(input_ids) > args.max_seq_len:
             input_ids = input_ids[:args.max_seq_len]
+            truncated_count += 1
         
         # Skip empty sequences
         if len(input_ids) > 0:
             sequences.append(input_ids)
+    
+    if truncated_count > 0:
+        print(f"Warning: Truncated {truncated_count} sequences to max_seq_len={args.max_seq_len}")
     
     print(f"Read {len(sequences)} non-empty sequences")
     

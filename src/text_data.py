@@ -354,8 +354,8 @@ class PrePackedCollator:
             
             # Compute max sequence length
             if len(cu_seq) > 1:
-                seq_lens = torch.tensor(cu_seq[1:]) - torch.tensor(cu_seq[:-1])
-                max_seqlens.append(seq_lens.max().item())
+                seq_lens = np.diff(cu_seq)
+                max_seqlens.append(int(seq_lens.max()))
             else:
                 max_seqlens.append(0)
         
