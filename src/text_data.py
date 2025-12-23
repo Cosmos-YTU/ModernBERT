@@ -285,7 +285,8 @@ class PrePackedStreamingDataset(StreamingDataset):
         **kwargs: Dict[str, Any],
     ):
         if kwargs is not None and len(kwargs) > 0:
-            raise ValueError(f"PrePackedStreamingDataset() got an unexpected keyword argument: {kwargs}")
+            unexpected_args = list(kwargs.keys())
+            raise ValueError(f"PrePackedStreamingDataset() got unexpected keyword arguments: {unexpected_args}")
 
         if local is not None and (remote is None or (local == remote)):
             if os.path.isdir(local):
@@ -335,6 +336,9 @@ class PrePackedMLMCollator:
     
     Takes batches of pre-packed samples and applies MLM masking on-the-fly,
     ensuring masking varies across epochs.
+    
+    Note: For reproducible masking across runs, pass the same seed value.
+    The RNG state is independent per collator instance.
     """
 
     def __init__(
@@ -343,12 +347,14 @@ class PrePackedMLMCollator:
         pad_token_id: int,
         mlm_probability: float = 0.3,
         ignore_token_id: int = -100,
+        seed: Optional[int] = None,
     ):
         self.mask_token_id = mask_token_id
         self.pad_token_id = pad_token_id
         self.mlm_probability = mlm_probability
         self.ignore_token_id = ignore_token_id
-        self.np_rng = np.random.default_rng()
+        # Create RNG with optional seed for reproducibility
+        self.np_rng = np.random.default_rng(seed)
         
         # Import SequencePacker once in init instead of per call
         from sequence_packer import SequencePacker
