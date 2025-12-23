@@ -138,9 +138,14 @@ def test_offline_sequence_packer():
     # Check that sequences are properly packed
     for i in range(2):
         cu_seqlens = cu_seqlens_batch[i]
+        # cu_seqlens format: [0, end_of_seq1, end_of_seq2, ..., pack_length]
+        # We verify attention mask for actual sequences (not the final pack_length marker)
+        num_sequences = len(cu_seqlens) - 1  # Subtract 1 for the initial 0
+        
         # Verify that non-padding positions have attention_mask = 1
-        # Only check up to the last actual sequence end (not the final pack_length marker)
-        for j in range(len(cu_seqlens) - 2):  # -2 to skip the final pack_length marker
+        # Only check up to the second-to-last element (skip the final pack_length marker)
+        CU_SEQLENS_FINAL_OFFSET = 2  # Offset to skip final pack_length marker in cu_seqlens
+        for j in range(len(cu_seqlens) - CU_SEQLENS_FINAL_OFFSET):
             start = cu_seqlens[j]
             end = cu_seqlens[j + 1]
             if end > start:
@@ -149,7 +154,8 @@ def test_offline_sequence_packer():
                     f"Attention mask should be 1 for packed sequence range [{start}:{end}]"
         
         # Check that padding positions have attention_mask = 0
-        last_seq_end = cu_seqlens[-2]  # Get the position before the final pack_length marker
+        # The last sequence ends at cu_seqlens[-2] (the position before the final pack_length marker)
+        last_seq_end = cu_seqlens[-CU_SEQLENS_FINAL_OFFSET]
         if last_seq_end < pack_length:
             # There should be padding
             assert np.all(attention_masks[i, last_seq_end:pack_length] == 0), \

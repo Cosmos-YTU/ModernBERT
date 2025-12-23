@@ -349,24 +349,27 @@ class PrePackedMLMCollator:
         self.mlm_probability = mlm_probability
         self.ignore_token_id = ignore_token_id
         self.np_rng = np.random.default_rng()
+        
+        # Import SequencePacker once in init instead of per call
+        from sequence_packer import SequencePacker
+        self.mlm_masking_fn = SequencePacker.mlm_masking
 
     def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         # Stack input_ids and attention_mask from all examples
         input_ids_list = [torch.from_numpy(ex["input_ids"]) for ex in examples]
-        attention_mask_list = [torch.from_numpy(ex["attention_mask"].astype(np.int64)) for ex in examples]
+        attention_mask_list = [torch.from_numpy(ex["attention_mask"]) for ex in examples]
         cu_seqlens_list = [ex["cu_seqlens"] for ex in examples]
         
         # Stack into batch tensors
         input_ids_batch = torch.stack(input_ids_list)
+        # Keep attention_mask as int8 for memory efficiency (will be converted to proper dtype later if needed)
         attention_mask_batch = torch.stack(attention_mask_list)
         
         # Convert to numpy for MLM masking
         input_ids_np = input_ids_batch.numpy()
         
         # Apply MLM masking using the SequencePacker.mlm_masking function
-        from sequence_packer import SequencePacker
-        
-        masked_input_ids, labels = SequencePacker.mlm_masking(
+        masked_input_ids, labels = self.mlm_masking_fn(
             input_ids_np,
             self.mlm_probability,
             self.mask_token_id,

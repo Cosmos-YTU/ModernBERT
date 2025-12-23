@@ -28,6 +28,10 @@ sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 
 from sequence_packer import find_best_fit
 
+# Constants
+DEFAULT_PACK_LENGTH_MULTIPLIER = 32  # Pack length = max_seq_len * 32 for efficient packing
+PACKING_CONTINUE_THRESHOLD = 0.5  # Continue packing while buffer >= threshold * batch_size
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Pack sequences offline into MDS format")
@@ -48,7 +52,7 @@ def parse_args():
         "--pack_length",
         type=int,
         default=None,
-        help="Length of each packed sequence (default: max_seq_len * 32 for efficient packing)",
+        help=f"Length of each packed sequence (default: max_seq_len * {DEFAULT_PACK_LENGTH_MULTIPLIER} for efficient packing)",
     )
     parser.add_argument("--pad_token_id", type=int, default=0, help="Pad token ID (default: 0)")
     parser.add_argument("--buffer_size", type=int, default=10000, help="Buffer size for packing (default: 10000)")
@@ -129,7 +133,9 @@ class OfflineSequencePacker:
 
         # Pack in batches for efficiency
         batch_size = 128
-        while len(self.buffer) >= batch_size // 2:  # Continue while we have enough sequences
+        # Continue packing while we have enough sequences (threshold to avoid inefficient small batches)
+        min_buffer_size = int(batch_size * PACKING_CONTINUE_THRESHOLD)
+        while len(self.buffer) >= min_buffer_size:
             result = self.pack_batch(batch_size)
             if result is None:
                 # Not enough sequences for a full batch, pack remaining individually
@@ -228,7 +234,7 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
 
     # Determine pack length
-    pack_length = args.pack_length if args.pack_length else args.max_seq_len * 32
+    pack_length = args.pack_length if args.pack_length else args.max_seq_len * DEFAULT_PACK_LENGTH_MULTIPLIER
 
     print(f"Loading sequences from {len(args.sources)} sources...")
     all_sequences = []
