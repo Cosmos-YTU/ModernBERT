@@ -77,23 +77,21 @@ python main.py yamls/modernbert/your-config.yaml
 
 ## Multiple Sources / Dataset Weighting
 
-You can combine multiple pre-packed datasets with different weights using the `sources` pattern:
+You can combine multiple pre-packed datasets with different weights using the `streams` pattern:
 
 ```yaml
 train_loader:
   name: text
   dataset:
-    sources:
-      - local: /path/to/dataset1-packed
+    streams:
+      stream1:
+        local: /path/to/dataset1-packed
         split: train
-      - local: /path/to/dataset1-packed
+        proportion: 0.75
+      stream2:
+        local: /path/to/dataset2-packed
         split: train
-      - local: /path/to/dataset1-packed
-        split: train
-      # ^ Repeat to weight dataset1 3x
-      - local: /path/to/dataset2-packed
-        split: train
-      # ^ dataset2 appears 1x
+        proportion: 0.25
     tokenizer_name: ${tokenizer_name}
     max_seq_len: ${max_seq_len}
     shuffle: true
@@ -106,7 +104,7 @@ train_loader:
   sequence_packing: false
 ```
 
-This gives a 3:1 ratio between dataset1 and dataset2.
+This gives a 75%/25% split between dataset1 and dataset2.
 
 ## Data Format
 
@@ -146,7 +144,7 @@ This matches the behavior of `GreedyBestFitSequencePacker` but without runtime o
 
 ### Optional Options
 
-- `sources: [...]` - Multiple dataset sources with weighting
+- `streams: {...}` - Multiple dataset sources with weighting (using proportion parameter)
 - `mlm_probability: 0.3` - MLM masking probability (default for ModernBERT)
 - `shuffle: true` - Shuffle samples during streaming
 
@@ -211,13 +209,15 @@ Then use in training config:
 train_loader:
   name: text
   dataset:
-    sources:
-      - local: /data/berturk-corpus-packed
+    streams:
+      berturk:
+        local: /data/berturk-corpus-packed
         split: train
-      - local: /data/berturk-corpus-packed
+        proportion: 0.67
+      fineweb:
+        local: /data/fineweb-2-turkish-packed
         split: train
-      - local: /data/fineweb-2-turkish-packed
-        split: train
+        proportion: 0.33
     tokenizer_name: dbmdz/bert-base-turkish-cased
     max_seq_len: 8192
     streaming: true

@@ -389,9 +389,7 @@ def build_streaming_dataset(
 ):
     # build streams
     streams_dict = cfg.dataset.get("streams", None)
-    sources_list = cfg.dataset.get("sources", None)
     streams = None
-    
     if streams_dict is not None:
         streams = []
         for _, stream in streams_dict.items():
@@ -407,24 +405,6 @@ def build_streaming_dataset(
                     download_timeout=stream.get("download_timeout", None) or cfg.dataset.get("download_timeout", 60),
                     validate_hash=stream.get("validate_hash", None) or cfg.dataset.get("validate_hash", None),
                     keep_zip=stream.get("keep_zip", None) or cfg.dataset.get("keep_zip", False),
-                )
-            )
-    elif sources_list is not None:
-        # Build streams from sources list (similar to build_no_streaming_dataset)
-        streams = []
-        for source_cfg in sources_list:
-            streams.append(
-                Stream(
-                    remote=source_cfg.get("remote", None),
-                    local=source_cfg.get("local", None),
-                    split=source_cfg.get("split", None),
-                    proportion=source_cfg.get("proportion", None),
-                    repeat=source_cfg.get("repeat", None),
-                    choose=source_cfg.get("choose", None),
-                    download_retry=source_cfg.get("download_retry", None) or cfg.dataset.get("download_retry", 2),
-                    download_timeout=source_cfg.get("download_timeout", None) or cfg.dataset.get("download_timeout", 60),
-                    validate_hash=source_cfg.get("validate_hash", None) or cfg.dataset.get("validate_hash", None),
-                    keep_zip=source_cfg.get("keep_zip", None) or cfg.dataset.get("keep_zip", False),
                 )
             )
 

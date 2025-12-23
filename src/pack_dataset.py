@@ -69,13 +69,13 @@ def pack_sequences(sequences: List[np.ndarray], max_seq_len: int, eos_token_id: 
     remaining_spaces = np.array([max_seq_len], dtype=np.int32)
     
     for seq in tqdm(sequences, desc="Packing sequences"):
+        # Truncate sequence to max_seq_len - 1 to leave room for EOS token
+        if len(seq) >= max_seq_len:
+            seq = seq[:max_seq_len - 1]
+        
         # Add EOS token to sequence
         seq_with_eos = np.append(seq, eos_token_id).astype(np.int64)
         seq_len = len(seq_with_eos)
-        
-        if seq_len > max_seq_len:
-            # Skip sequences that are too long
-            continue
             
         # Find best fit
         best_fit_idx = find_best_fit(remaining_spaces, seq_len)

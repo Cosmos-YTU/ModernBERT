@@ -73,14 +73,15 @@ train_loader:
     split: train
     
     # Option 2: Multiple sources with weighting (uncomment to use)
-    # sources:
-    #   - local: /path/to/berturk-corpus-packed
+    # streams:
+    #   stream1:
+    #     local: /path/to/berturk-corpus-packed
     #     split: train
-    #   - local: /path/to/berturk-corpus-packed
+    #     proportion: 0.75
+    #   stream2:
+    #     local: /path/to/fineweb-2-turkish-packed
     #     split: train
-    #   # ... repeated for weighting
-    #   - local: /path/to/fineweb-2-turkish-packed
-    #     split: train
+    #     proportion: 0.25
     
     tokenizer_name: ${tokenizer_name}
     max_seq_len: ${max_seq_len}
