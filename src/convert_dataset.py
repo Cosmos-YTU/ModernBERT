@@ -42,6 +42,12 @@ def parse_args() -> Namespace:
     parser.add_argument("--bos_text", type=str, required=False, default=None)
     parser.add_argument("--eos_text", type=str, required=False, default=None)
     parser.add_argument("--no_wrap", default=False, action="store_true")
+    parser.add_argument(
+        "--data_files",
+        nargs="+",
+        default=None,
+        help="If set, overrides constants.data_files (passed to load_dataset as data_files=)",
+    )
 
     parsed = parser.parse_args()
 
@@ -76,6 +82,7 @@ class DatasetConstants:
     chars_per_token: int
     text_mapper: Optional[Callable[[Dict], str]] = None
     data_files: Optional[List[str]] = None
+    hf_loader_path: Optional[str] = None  # overrides --dataset as load_dataset path= (e.g. "json")
     splits: Dict[str, "DataSplitConstants"] = field(default_factory=dict)
 
     def __iter__(self):
@@ -242,6 +249,16 @@ turkishlawconstants.splits["train"] = DataSplitConstants(
 )
 
 
+hplt3turconstants = DatasetConstants(
+    chars_per_sample=3000,
+    chars_per_token=4,
+    hf_loader_path="json",
+)
+hplt3turconstants.splits["train"] = DataSplitConstants(
+    hf_split="train", folder_split="train", raw_samples=159_000_000, truncated_samples=None
+)
+
+
 starcoderdata8plconstants = DatasetConstants(
     chars_per_sample=3000,
     chars_per_token=4,
@@ -275,6 +292,7 @@ CONSTS = {
     "HuggingFaceFW/finepdfs-edu": finepdfseduturconstants,
     "erdem-erdem/Turkish-Law-Documents-700k-clustered": turkishlawconstants,
     "bigcode/starcoderdata": starcoderdata8plconstants,
+    "hplt3-tur_Latn": hplt3turconstants,
 }
 
 
@@ -562,8 +580,10 @@ def main(args: Namespace) -> None:
             continue
 
         # Get samples
+        loader_path = dataset_constants.hf_loader_path or args.dataset
+        data_files = args.data_files if args.data_files is not None else dataset_constants.data_files
         dataset = build_hf_dataset(
-            dataset_name=args.dataset,
+            dataset_name=loader_path,
             data_subset=args.data_subset,
             split=hf_split,
             mode=mode,
@@ -573,7 +593,7 @@ def main(args: Namespace) -> None:
             no_wrap=args.no_wrap,
             tokenizer=tokenizer,
             text_mapper=dataset_constants.text_mapper,
-            data_files=dataset_constants.data_files,
+            data_files=data_files,
         )
         loader = build_dataloader(dataset=dataset, batch_size=512)
         samples = generate_samples(loader, truncate_num_samples=truncate_num_samples)
