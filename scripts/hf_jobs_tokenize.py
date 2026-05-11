@@ -34,6 +34,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -90,9 +92,19 @@ def main():
     run(["apt-get", "install", "-y", "-qq", "sshpass", "rsync", "openssh-client", "git"])
 
     print("\n=== Cloning repo ===", flush=True)
-    if os.path.exists(REPO_DIR):
-        shutil.rmtree(REPO_DIR)
-    run(["git", "clone", "--depth", "1", "-b", REPO_BRANCH, REPO_URL, REPO_DIR])
+    backoff = 5
+    for attempt in range(1, 6):
+        if os.path.exists(REPO_DIR):
+            shutil.rmtree(REPO_DIR)
+        try:
+            run(["git", "clone", "--depth", "1", "-b", REPO_BRANCH, REPO_URL, REPO_DIR])
+            break
+        except subprocess.CalledProcessError as e:
+            if attempt == 5:
+                raise
+            print(f"clone failed (attempt {attempt}/5): {e}; sleeping {backoff}s", flush=True)
+            time.sleep(backoff)
+            backoff *= 2
     head = run(["git", "-C", REPO_DIR, "rev-parse", "HEAD"], capture=True)
     print(f"HEAD: {head.stdout.strip()}", flush=True)
 
@@ -116,27 +128,6 @@ def main():
     if NO_WRAP:
         cmd += ["--no_wrap"]
 
-    t_tok_start = time.time()
-    run(cmd)
-    t_tok = time.time() - t_tok_start
-    print(f"TOKENIZE_WALLCLOCK_S={t_tok:.2f}", flush=True)
-
-    print("\n=== Output listing & manifest ===", flush=True)
-    out_root = Path(OUT_DIR)
-    files = sorted([p for p in out_root.rglob("*") if p.is_file()])
-    total_bytes = 0
-    manifest = []
-    for p in files:
-        sz = p.stat().st_size
-        total_bytes += sz
-        digest = sha256_file(p)
-        rel = p.relative_to(out_root)
-        manifest.append((str(rel), sz, digest))
-        print(f"  {digest}  {sz:>12d}  {rel}", flush=True)
-    print(f"FILE_COUNT={len(files)}", flush=True)
-    print(f"TOTAL_BYTES={total_bytes}", flush=True)
-
-    print("\n=== Pushing to remote ===", flush=True)
     env = os.environ.copy()
     env["SSHPASS"] = pw
     ssh_opts = (
@@ -151,23 +142,110 @@ def main():
         f"{REMOTE_USER}@{REMOTE_HOST} 'mkdir -p {REMOTE_DEST}'"
     ], env=env)
 
-    t_xfer_start = time.time()
-    run([
-        "rsync", "-avz", "--info=progress2",
-        f"--rsh={ssh_opts}",
-        f"{OUT_DIR}/",
-        f"{REMOTE_USER}@{REMOTE_HOST}:{REMOTE_DEST}/",
-    ], env=env)
-    t_xfer = time.time() - t_xfer_start
+    manifest = []
+    pushed = set()
+    manifest_lock = threading.Lock()
+    transfer_bytes = [0]
+    transfer_seconds = [0.0]
+
+    def push_paths(paths):
+        out_root = Path(OUT_DIR)
+        new_entries = []
+        rel_list = []
+        for p in paths:
+            try:
+                rel = str(p.relative_to(out_root))
+            except ValueError:
+                continue
+            if rel in pushed or not p.is_file():
+                continue
+            try:
+                sz = p.stat().st_size
+            except FileNotFoundError:
+                continue
+            digest = sha256_file(p)
+            new_entries.append((rel, sz, digest))
+            rel_list.append(rel)
+        if not rel_list:
+            return
+        with tempfile.NamedTemporaryFile("w", delete=False) as ff:
+            ff.write("\n".join(rel_list) + "\n")
+            ff_path = ff.name
+        try:
+            t0 = time.time()
+            run([
+                "rsync", "-az", "--remove-source-files",
+                f"--files-from={ff_path}",
+                f"--rsh={ssh_opts}",
+                f"{OUT_DIR}/",
+                f"{REMOTE_USER}@{REMOTE_HOST}:{REMOTE_DEST}/",
+            ], env=env)
+            transfer_seconds[0] += time.time() - t0
+        finally:
+            os.unlink(ff_path)
+        with manifest_lock:
+            manifest.extend(new_entries)
+            transfer_bytes[0] += sum(e[1] for e in new_entries)
+            for rel in rel_list:
+                pushed.add(rel)
+        print(f"streamed {len(rel_list)} shard(s) to BSC (latest: {rel_list[-1]})", flush=True)
+
+    def list_finalized_shards():
+        """Shards with a higher-numbered sibling are finalized by MDSWriter."""
+        out_root = Path(OUT_DIR)
+        finalized = []
+        if not out_root.exists():
+            return finalized
+        for split_dir in out_root.iterdir():
+            if not split_dir.is_dir():
+                continue
+            shards = sorted(split_dir.glob("shard.*.mds"))
+            if len(shards) < 2:
+                continue
+            finalized.extend(shards[:-1])
+        return finalized
+
+    stop_evt = threading.Event()
+
+    def watcher_loop():
+        while not stop_evt.is_set():
+            try:
+                push_paths(list_finalized_shards())
+            except Exception as e:
+                print(f"watcher push error (will retry): {e}", flush=True)
+            stop_evt.wait(30)
+
+    watcher = threading.Thread(target=watcher_loop, name="shard-pusher", daemon=True)
+    watcher.start()
+    print("=== Started background shard pusher (30s tick) ===", flush=True)
+
+    t_tok_start = time.time()
+    try:
+        run(cmd)
+    finally:
+        stop_evt.set()
+        watcher.join(timeout=60)
+    t_tok = time.time() - t_tok_start
+    print(f"TOKENIZE_WALLCLOCK_S={t_tok:.2f}", flush=True)
+
+    print("\n=== Final flush (latest shards + index.json) ===", flush=True)
+    out_root = Path(OUT_DIR)
+    remaining = sorted([p for p in out_root.rglob("*") if p.is_file()])
+    push_paths(remaining)
+
+    total_bytes = transfer_bytes[0]
+    t_xfer = transfer_seconds[0]
     mb = total_bytes / (1024 * 1024)
     mbps = mb / t_xfer if t_xfer > 0 else 0.0
-    print(f"\nTRANSFER_WALLCLOCK_S={t_xfer:.2f}", flush=True)
+    print(f"FILE_COUNT={len(manifest)}", flush=True)
+    print(f"TOTAL_BYTES={total_bytes}", flush=True)
+    print(f"TRANSFER_WALLCLOCK_S={t_xfer:.2f}", flush=True)
     print(f"TRANSFER_MB={mb:.3f}", flush=True)
     print(f"TRANSFER_MBPS={mbps:.3f}", flush=True)
 
     print("\n=== SHA256 MANIFEST (sha256  size  path) ===", flush=True)
     print("---MANIFEST-BEGIN---", flush=True)
-    for rel, sz, digest in manifest:
+    for rel, sz, digest in sorted(manifest):
         print(f"{digest}  {sz}  {rel}", flush=True)
     print("---MANIFEST-END---", flush=True)
     print("OK", flush=True)

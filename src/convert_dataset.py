@@ -259,23 +259,19 @@ hplt3turconstants.splits["train"] = DataSplitConstants(
 )
 
 
-starcoderdata8plconstants = DatasetConstants(
+starcoderdata4plconstants = DatasetConstants(
     chars_per_sample=3000,
     chars_per_token=4,
     text_mapper=lambda s: s["content"],
     data_files=[
-        "c/*.parquet",
-        "cpp/*.parquet",
-        "c-sharp/*.parquet",
-        "java/*.parquet",
-        "javascript/*.parquet",
-        "php/*.parquet",
         "python/*.parquet",
+        "javascript/*.parquet",
         "sql/*.parquet",
+        "java/train-????[02468]-of-00087.parquet",
     ],
 )
-starcoderdata8plconstants.splits["train"] = DataSplitConstants(
-    hf_split="train", folder_split="train", raw_samples=200_000_000, truncated_samples=None
+starcoderdata4plconstants.splits["train"] = DataSplitConstants(
+    hf_split="train", folder_split="train", raw_samples=120_000_000, truncated_samples=None
 )
 
 
@@ -291,7 +287,7 @@ CONSTS = {
     "HuggingFaceFW/fineweb-edu": finewebeduconstants,
     "HuggingFaceFW/finepdfs-edu": finepdfseduturconstants,
     "erdem-erdem/Turkish-Law-Documents-700k-clustered": turkishlawconstants,
-    "bigcode/starcoderdata": starcoderdata8plconstants,
+    "bigcode/starcoderdata": starcoderdata4plconstants,
     "hplt3-tur_Latn": hplt3turconstants,
 }
 
