@@ -520,10 +520,17 @@ class NoStreamingDataset(Dataset):
             if "attention_mask" not in sample:
                 sample["attention_mask"] = np.ones_like(sample["input_ids"])
             return sample
+        elif "tokens" in sample:
+            sample["input_ids"] = np.frombuffer(sample.pop("tokens"), dtype=np.int64).copy()[: self.max_seq_len]
+            if "attention_mask" in sample:
+                sample["attention_mask"] = np.frombuffer(sample.pop("attention_mask"), dtype=np.int64).copy()[: self.max_seq_len]
+            else:
+                sample["attention_mask"] = np.ones_like(sample["input_ids"])
+            return sample
         elif "text" in sample:
             return self._tokenize(sample)
         else:
-            RuntimeError("Data sample must contain a field with `input_ids` or `text`")
+            RuntimeError("Data sample must contain a field with `input_ids`, `tokens`, or `text`")
 
     def __len__(self):
         return self.len

@@ -166,8 +166,25 @@ berturkcorpusconstants.splits["val"] = DataSplitConstants(
     hf_split="test", folder_split="val", raw_samples=35_437, truncated_samples=None
 )
 
+pythoncodeinstructionsconstants = DatasetConstants(
+    chars_per_sample=1200,
+    chars_per_token=4,
+)
+pythoncodeinstructionsconstants.splits["train"] = DataSplitConstants(
+    hf_split="train", folder_split="train", raw_samples=18_591, truncated_samples=None
+)
+pythoncodeinstructionsconstants.splits["val"] = DataSplitConstants(
+    hf_split="val", folder_split="val", raw_samples=19, truncated_samples=None
+)
 
-CONSTS = {"c4": c4constants, "the_pile": pileconstants, "HuggingFaceFW/fineweb-2": fineweb2constants, "ytu-ce-cosmos/berturk-corpus-splitted": berturkcorpusconstants}
+
+CONSTS = {
+    "c4": c4constants,
+    "the_pile": pileconstants,
+    "HuggingFaceFW/fineweb-2": fineweb2constants,
+    "ytu-ce-cosmos/berturk-corpus-splitted": berturkcorpusconstants,
+    "mrbesher/python-code-instructions-18k-alpaca-tr": pythoncodeinstructionsconstants,
+}
 
 
 class NoConcatDataset(IterableDataset):
