@@ -9,7 +9,7 @@ import warnings
 from argparse import ArgumentParser, Namespace
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Dict, Iterable, Optional, Union
+from typing import Callable, Dict, Iterable, List, Optional, Union
 
 import datasets as hf_datasets
 import numpy as np
@@ -75,6 +75,7 @@ class DatasetConstants:
     chars_per_sample: int
     chars_per_token: int
     text_mapper: Optional[Callable[[Dict], str]] = None
+    data_files: Optional[List[str]] = None
     splits: Dict[str, "DataSplitConstants"] = field(default_factory=dict)
 
     def __iter__(self):
@@ -241,6 +242,26 @@ turkishlawconstants.splits["train"] = DataSplitConstants(
 )
 
 
+starcoderdata8plconstants = DatasetConstants(
+    chars_per_sample=3000,
+    chars_per_token=4,
+    text_mapper=lambda s: s["content"],
+    data_files=[
+        "c/*.parquet",
+        "cpp/*.parquet",
+        "c-sharp/*.parquet",
+        "java/*.parquet",
+        "javascript/*.parquet",
+        "php/*.parquet",
+        "python/*.parquet",
+        "sql/*.parquet",
+    ],
+)
+starcoderdata8plconstants.splits["train"] = DataSplitConstants(
+    hf_split="train", folder_split="train", raw_samples=200_000_000, truncated_samples=None
+)
+
+
 CONSTS = {
     "c4": c4constants,
     "the_pile": pileconstants,
@@ -253,6 +274,7 @@ CONSTS = {
     "HuggingFaceFW/fineweb-edu": finewebeduconstants,
     "HuggingFaceFW/finepdfs-edu": finepdfseduturconstants,
     "erdem-erdem/Turkish-Law-Documents-700k-clustered": turkishlawconstants,
+    "bigcode/starcoderdata": starcoderdata8plconstants,
 }
 
 
@@ -268,8 +290,14 @@ class NoConcatDataset(IterableDataset):
         data_subset: Union[str, None],
         split: str,
         text_mapper: Optional[Callable[[Dict], str]] = None,
+        data_files: Optional[List[str]] = None,
     ):
-        self.hf_dataset = hf_datasets.load_dataset(path=dataset_name, name=data_subset, split=split, streaming=True)
+        load_kwargs = dict(path=dataset_name, split=split, streaming=True)
+        if data_files:
+            load_kwargs["data_files"] = data_files
+        elif data_subset:
+            load_kwargs["name"] = data_subset
+        self.hf_dataset = hf_datasets.load_dataset(**load_kwargs)
         self.text_mapper = text_mapper if text_mapper is not None else (lambda s: s["text"])
 
     def __iter__(self) -> Iterable[Dict[str, bytes]]:
@@ -312,6 +340,7 @@ class ConcatTokensDataset(IterableDataset):
         no_wrap: bool,
         data_subset: Union[str, None] = None,
         text_mapper: Optional[Callable[[Dict], str]] = None,
+        data_files: Optional[List[str]] = None,
     ):
         self.tokenizer = tokenizer
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -319,7 +348,12 @@ class ConcatTokensDataset(IterableDataset):
         self.bos_text = bos_text
         self.eos_text = eos_text
         self.should_wrap = not no_wrap
-        self.hf_dataset = hf_datasets.load_dataset(path=dataset_name, name=data_subset, split=split, streaming=True)
+        load_kwargs = dict(path=dataset_name, split=split, streaming=True)
+        if data_files:
+            load_kwargs["data_files"] = data_files
+        elif data_subset:
+            load_kwargs["name"] = data_subset
+        self.hf_dataset = hf_datasets.load_dataset(**load_kwargs)
         self.text_mapper = text_mapper if text_mapper is not None else (lambda s: s["text"])
 
         self.bos_tokens = self.tokenizer(self.bos_text, truncation=False, padding=False, add_special_tokens=False)[
@@ -380,6 +414,7 @@ def build_hf_dataset(
     tokenizer: Optional[PreTrainedTokenizerBase],
     data_subset: Union[str, None] = None,
     text_mapper: Optional[Callable[[Dict], str]] = None,
+    data_files: Optional[List[str]] = None,
 ) -> IterableDataset:
     """Build an IterableDataset over the HF C4 or pile source data.
 
@@ -399,7 +434,11 @@ def build_hf_dataset(
     """
     if mode == ConcatMode.NO_CONCAT:
         dataset = NoConcatDataset(
-            dataset_name=dataset_name, data_subset=data_subset, split=split, text_mapper=text_mapper
+            dataset_name=dataset_name,
+            data_subset=data_subset,
+            split=split,
+            text_mapper=text_mapper,
+            data_files=data_files,
         )
     else:
         assert bos_text is not None
@@ -427,6 +466,7 @@ def build_hf_dataset(
             eos_text=eos_text,
             no_wrap=no_wrap,
             text_mapper=text_mapper,
+            data_files=data_files,
         )
     return dataset
 
@@ -533,6 +573,7 @@ def main(args: Namespace) -> None:
             no_wrap=args.no_wrap,
             tokenizer=tokenizer,
             text_mapper=dataset_constants.text_mapper,
+            data_files=dataset_constants.data_files,
         )
         loader = build_dataloader(dataset=dataset, batch_size=512)
         samples = generate_samples(loader, truncate_num_samples=truncate_num_samples)
