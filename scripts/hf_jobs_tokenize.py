@@ -130,16 +130,21 @@ def main():
 
     env = os.environ.copy()
     env["SSHPASS"] = pw
+    ssh_ctl = "/tmp/ssh-bsc.sock"
     ssh_opts = (
         "sshpass -e ssh "
+        f"-o ControlMaster=auto "
+        f"-o ControlPath={ssh_ctl} "
+        f"-o ControlPersist=8h "
         "-o StrictHostKeyChecking=accept-new "
         "-o UserKnownHostsFile=/dev/null "
         "-o LogLevel=ERROR"
     )
+    # First ssh call opens the ControlMaster socket; all later rsyncs reuse it
+    # over the same TCP/SSH connection (no re-auth, no fail2ban risk).
     run([
         "bash", "-c",
-        f"sshpass -e ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "
-        f"{REMOTE_USER}@{REMOTE_HOST} 'mkdir -p {REMOTE_DEST}'"
+        f"{ssh_opts} {REMOTE_USER}@{REMOTE_HOST} 'mkdir -p {REMOTE_DEST}'"
     ], env=env)
 
     manifest = []
@@ -207,17 +212,19 @@ def main():
 
     stop_evt = threading.Event()
 
+    PUSH_TICK_SECONDS = 300
+
     def watcher_loop():
         while not stop_evt.is_set():
             try:
                 push_paths(list_finalized_shards())
             except Exception as e:
                 print(f"watcher push error (will retry): {e}", flush=True)
-            stop_evt.wait(30)
+            stop_evt.wait(PUSH_TICK_SECONDS)
 
     watcher = threading.Thread(target=watcher_loop, name="shard-pusher", daemon=True)
     watcher.start()
-    print("=== Started background shard pusher (30s tick) ===", flush=True)
+    print(f"=== Started background shard pusher ({PUSH_TICK_SECONDS}s tick, SSH ControlMaster) ===", flush=True)
 
     t_tok_start = time.time()
     try:
