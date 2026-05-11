@@ -196,6 +196,51 @@ opus100constants.splits["val"] = DataSplitConstants(
 )
 
 
+cosmosconstants = DatasetConstants(
+    chars_per_sample=2000,
+    chars_per_token=4,
+)
+cosmosconstants.splits["train"] = DataSplitConstants(
+    hf_split="train", folder_split="train", raw_samples=9_070_000, truncated_samples=None
+)
+
+
+culturaxtrconstants = DatasetConstants(
+    chars_per_sample=2000,
+    chars_per_token=4,
+)
+culturaxtrconstants.splits["train"] = DataSplitConstants(
+    hf_split="train", folder_split="train", raw_samples=64_000_000, truncated_samples=None
+)
+
+
+finewebeduconstants = DatasetConstants(
+    chars_per_sample=2000,
+    chars_per_token=4,
+)
+finewebeduconstants.splits["train"] = DataSplitConstants(
+    hf_split="train", folder_split="train", raw_samples=9_672_101, truncated_samples=None
+)
+
+
+finepdfseduturconstants = DatasetConstants(
+    chars_per_sample=1500,
+    chars_per_token=4,
+)
+finepdfseduturconstants.splits["train"] = DataSplitConstants(
+    hf_split="train", folder_split="train", raw_samples=1_000_000, truncated_samples=None
+)
+
+
+turkishlawconstants = DatasetConstants(
+    chars_per_sample=2500,
+    chars_per_token=4,
+)
+turkishlawconstants.splits["train"] = DataSplitConstants(
+    hf_split="train", folder_split="train", raw_samples=702_000, truncated_samples=None
+)
+
+
 CONSTS = {
     "c4": c4constants,
     "the_pile": pileconstants,
@@ -203,6 +248,11 @@ CONSTS = {
     "/mnt/local_storage/datasets/kesgin-8k/merged": long8kcorpusconstants,
     "mrbesher/python-code-instructions-18k-alpaca-tr": pythoncodeinstructionsconstants,
     "Helsinki-NLP/opus-100": opus100constants,
+    "ytu-ce-cosmos/Cosmos-Turkish-Corpus-v1.0": cosmosconstants,
+    "uonlp/CulturaX": culturaxtrconstants,
+    "HuggingFaceFW/fineweb-edu": finewebeduconstants,
+    "HuggingFaceFW/finepdfs-edu": finepdfseduturconstants,
+    "erdem-erdem/Turkish-Law-Documents-700k-clustered": turkishlawconstants,
 }
 
 
