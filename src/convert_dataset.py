@@ -7,9 +7,9 @@ import os
 import platform
 import warnings
 from argparse import ArgumentParser, Namespace
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Iterable, Optional, Union
+from typing import Callable, Dict, Iterable, Optional, Union
 
 import datasets as hf_datasets
 import numpy as np
@@ -74,7 +74,8 @@ class DataSplitConstants:
 class DatasetConstants:
     chars_per_sample: int
     chars_per_token: int
-    splits = {}
+    text_mapper: Optional[Callable[[Dict], str]] = None
+    splits: Dict[str, "DataSplitConstants"] = field(default_factory=dict)
 
     def __iter__(self):
         for _, v in self.splits.items():
@@ -155,6 +156,17 @@ fineweb2constants.splits["val_small"] = DataSplitConstants(
 )
 
 
+long8kcorpusconstants = DatasetConstants(
+    chars_per_sample=600,
+    chars_per_token=4,
+)
+long8kcorpusconstants.splits["train"] = DataSplitConstants(
+    hf_split="train", folder_split="train", raw_samples=4_226_828, truncated_samples=None
+)
+long8kcorpusconstants.splits["val"] = DataSplitConstants(
+    hf_split="val", folder_split="val", raw_samples=4_223, truncated_samples=None
+)
+
 pythoncodeinstructionsconstants = DatasetConstants(
     chars_per_sample=1200,
     chars_per_token=4,
@@ -167,11 +179,30 @@ pythoncodeinstructionsconstants.splits["val"] = DataSplitConstants(
 )
 
 
+def _opus100_tr_en_mapper(sample: Dict) -> str:
+    return f"{sample['translation']['tr']} [SEP] {sample['translation']['en']}"
+
+
+opus100constants = DatasetConstants(
+    chars_per_sample=200,  # rough mean tr+en pair length
+    chars_per_token=4,
+    text_mapper=_opus100_tr_en_mapper,
+)
+opus100constants.splits["train"] = DataSplitConstants(
+    hf_split="train", folder_split="train", raw_samples=1_000_000, truncated_samples=None
+)
+opus100constants.splits["val"] = DataSplitConstants(
+    hf_split="validation", folder_split="val", raw_samples=2_000, truncated_samples=None
+)
+
+
 CONSTS = {
     "c4": c4constants,
     "the_pile": pileconstants,
     "HuggingFaceFW/fineweb-2": fineweb2constants,
+    "/mnt/local_storage/datasets/kesgin-8k/merged": long8kcorpusconstants,
     "mrbesher/python-code-instructions-18k-alpaca-tr": pythoncodeinstructionsconstants,
+    "Helsinki-NLP/opus-100": opus100constants,
 }
 
 
@@ -181,13 +212,20 @@ class NoConcatDataset(IterableDataset):
     Returns dicts of {'text': bytes}
     """
 
-    def __init__(self, dataset_name: str, data_subset: Union[str, None], split: str):
+    def __init__(
+        self,
+        dataset_name: str,
+        data_subset: Union[str, None],
+        split: str,
+        text_mapper: Optional[Callable[[Dict], str]] = None,
+    ):
         self.hf_dataset = hf_datasets.load_dataset(path=dataset_name, name=data_subset, split=split, streaming=True)
+        self.text_mapper = text_mapper if text_mapper is not None else (lambda s: s["text"])
 
     def __iter__(self) -> Iterable[Dict[str, bytes]]:
         for sample in self.hf_dataset:
             # convert to bytes to store in MDS binary format
-            yield {"text": sample["text"].encode("utf-8")}
+            yield {"text": self.text_mapper(sample).encode("utf-8")}
 
 
 class ConcatTokensDataset(IterableDataset):
@@ -223,6 +261,7 @@ class ConcatTokensDataset(IterableDataset):
         eos_text: str,
         no_wrap: bool,
         data_subset: Union[str, None] = None,
+        text_mapper: Optional[Callable[[Dict], str]] = None,
     ):
         self.tokenizer = tokenizer
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -231,6 +270,7 @@ class ConcatTokensDataset(IterableDataset):
         self.eos_text = eos_text
         self.should_wrap = not no_wrap
         self.hf_dataset = hf_datasets.load_dataset(path=dataset_name, name=data_subset, split=split, streaming=True)
+        self.text_mapper = text_mapper if text_mapper is not None else (lambda s: s["text"])
 
         self.bos_tokens = self.tokenizer(self.bos_text, truncation=False, padding=False, add_special_tokens=False)[
             "input_ids"
@@ -267,7 +307,7 @@ class ConcatTokensDataset(IterableDataset):
     def __iter__(self) -> Iterable[Dict[str, bytes]]:
         buffer = []
         for sample in self.hf_dataset:
-            encoded = self.tokenizer(sample["text"], truncation=False, padding=False)
+            encoded = self.tokenizer(self.text_mapper(sample), truncation=False, padding=False)
             iids = encoded["input_ids"]
             buffer = buffer + self.bos_tokens + iids + self.eos_tokens
             while len(buffer) >= self.max_length:
@@ -289,6 +329,7 @@ def build_hf_dataset(
     no_wrap: bool,
     tokenizer: Optional[PreTrainedTokenizerBase],
     data_subset: Union[str, None] = None,
+    text_mapper: Optional[Callable[[Dict], str]] = None,
 ) -> IterableDataset:
     """Build an IterableDataset over the HF C4 or pile source data.
 
@@ -307,7 +348,9 @@ def build_hf_dataset(
         An IterableDataset.
     """
     if mode == ConcatMode.NO_CONCAT:
-        dataset = NoConcatDataset(dataset_name=dataset_name, data_subset=data_subset, split=split)
+        dataset = NoConcatDataset(
+            dataset_name=dataset_name, data_subset=data_subset, split=split, text_mapper=text_mapper
+        )
     else:
         assert bos_text is not None
         assert eos_text is not None
@@ -333,6 +376,7 @@ def build_hf_dataset(
             bos_text=bos_text,
             eos_text=eos_text,
             no_wrap=no_wrap,
+            text_mapper=text_mapper,
         )
     return dataset
 
@@ -438,6 +482,7 @@ def main(args: Namespace) -> None:
             eos_text=args.eos_text,
             no_wrap=args.no_wrap,
             tokenizer=tokenizer,
+            text_mapper=dataset_constants.text_mapper,
         )
         loader = build_dataloader(dataset=dataset, batch_size=512)
         samples = generate_samples(loader, truncate_num_samples=truncate_num_samples)
