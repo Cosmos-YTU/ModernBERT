@@ -502,11 +502,19 @@ def build_dataloader(dataset, batch_size) -> DataLoader:
     else:
         num_workers = 0
 
+    nw_env = os.environ.get("NUM_WORKERS")
+    if nw_env is not None:
+        num_workers = max(0, int(nw_env))
+
     # If using multiple workers, configure each worker to prefetch as many samples as it can, up to
     # the aggregate device batch size
     # If not using workers, the torch DataLoader expects the default value for prefetch_factor,
     # which non-intuitively must be 2.
     prefetch_factor = max(1, 2 * batch_size // num_workers) if num_workers > 0 else 2
+
+    pf_env = os.environ.get("PREFETCH_FACTOR")
+    if pf_env is not None and num_workers > 0:
+        prefetch_factor = max(1, int(pf_env))
 
     return DataLoader(
         dataset=dataset,
