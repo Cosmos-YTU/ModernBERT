@@ -35,7 +35,7 @@ from transformers.tokenization_utils_base import BatchEncoding
 # Add src folder root to path to allow us to use relative imports regardless of what directory the script is run from
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 
-from src.sequence_packer import BufferedIterable, GreedyBestFitSequencePacker
+from sequence_packer import BufferedIterable, GreedyBestFitSequencePacker
 
 Tokenizer = Union[PreTrainedTokenizer, PreTrainedTokenizerFast]
 
@@ -252,6 +252,151 @@ class StreamingTextDataset(StreamingDataset):
         return token_sample
 
 
+class PrePackedStreamingDataset(StreamingDataset):
+    """
+    StreamingDataset for reading pre-packed sequences from MDS format.
+    
+    Pre-packed datasets contain sequences that have already been packed offline.
+    Each sample contains:
+    - input_ids: packed token IDs (bytes, decode to int64)
+    - cu_seqlens: cumulative sequence lengths (bytes, decode to int32)
+    - attention_mask: attention mask for non-padding tokens (bytes, decode to int8)
+    """
+
+    def __init__(
+        self,
+        streams: Optional[Sequence[Stream]] = None,
+        remote: Optional[str] = None,
+        local: Optional[str] = None,
+        split: Optional[str] = None,
+        download_retry: int = 2,
+        download_timeout: float = 60,
+        validate_hash: Optional[str] = None,
+        keep_zip: bool = False,
+        epoch_size: Optional[int] = None,
+        predownload: int = 100_000,
+        partition_algo: str = "orig",
+        num_canonical_nodes: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        shuffle: bool = False,
+        shuffle_algo: str = "py1s",
+        shuffle_seed: int = 9176,
+        cache_limit: Optional[int] = None,
+        **kwargs: Dict[str, Any],
+    ):
+        if kwargs is not None and len(kwargs) > 0:
+            unexpected_args = list(kwargs.keys())
+            raise ValueError(f"PrePackedStreamingDataset() got unexpected keyword arguments: {unexpected_args}")
+
+        if local is not None and (remote is None or (local == remote)):
+            if os.path.isdir(local):
+                contents = set(os.listdir(local))
+                if split is not None and split not in contents:
+                    raise ValueError(f"local directory {local} does not contain split {split}")
+
+        # Build Dataset
+        super().__init__(
+            streams=streams,
+            remote=remote,
+            local=local,
+            split=split,
+            download_retry=download_retry,
+            download_timeout=download_timeout,
+            validate_hash=validate_hash,
+            keep_zip=keep_zip,
+            epoch_size=epoch_size,
+            predownload=predownload,
+            partition_algo=partition_algo,
+            num_canonical_nodes=num_canonical_nodes,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            shuffle_algo=shuffle_algo,
+            shuffle_seed=shuffle_seed,
+            cache_limit=cache_limit,
+        )
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        sample = super().__getitem__(idx)
+        
+        # Decode bytes to numpy arrays
+        input_ids = np.frombuffer(sample["input_ids"], dtype=np.int64).copy()
+        cu_seqlens = np.frombuffer(sample["cu_seqlens"], dtype=np.int32).copy()
+        attention_mask = np.frombuffer(sample["attention_mask"], dtype=np.int8).copy()
+        
+        return {
+            "input_ids": input_ids,
+            "cu_seqlens": cu_seqlens,
+            "attention_mask": attention_mask,
+        }
+
+
+class PrePackedMLMCollator:
+    """
+    Collator for pre-packed sequences that applies MLM masking at runtime.
+    
+    Takes batches of pre-packed samples and applies MLM masking on-the-fly,
+    ensuring masking varies across epochs.
+    
+    Note: For reproducible masking across runs, pass the same seed value.
+    The RNG state is independent per collator instance.
+    """
+
+    def __init__(
+        self,
+        mask_token_id: int,
+        pad_token_id: int,
+        mlm_probability: float = 0.3,
+        ignore_token_id: int = -100,
+        seed: Optional[int] = None,
+    ):
+        self.mask_token_id = mask_token_id
+        self.pad_token_id = pad_token_id
+        self.mlm_probability = mlm_probability
+        self.ignore_token_id = ignore_token_id
+        # Create RNG with optional seed for reproducibility
+        self.np_rng = np.random.default_rng(seed)
+        
+        # Import SequencePacker once in init instead of per call
+        from sequence_packer import SequencePacker
+        self.mlm_masking_fn = SequencePacker.mlm_masking
+
+    def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        # Stack input_ids and attention_mask from all examples
+        input_ids_list = [torch.from_numpy(ex["input_ids"]) for ex in examples]
+        attention_mask_list = [torch.from_numpy(ex["attention_mask"]) for ex in examples]
+        cu_seqlens_list = [ex["cu_seqlens"] for ex in examples]
+        
+        # Stack into batch tensors
+        input_ids_batch = torch.stack(input_ids_list)
+        # Keep attention_mask as int8 for memory efficiency (will be converted to proper dtype later if needed)
+        attention_mask_batch = torch.stack(attention_mask_list)
+        
+        # Convert to numpy for MLM masking
+        input_ids_np = input_ids_batch.numpy()
+        
+        # Apply MLM masking using the SequencePacker.mlm_masking function
+        masked_input_ids, labels = self.mlm_masking_fn(
+            input_ids_np,
+            self.mlm_probability,
+            self.mask_token_id,
+            self.pad_token_id,
+            self.ignore_token_id,
+            self.np_rng,
+        )
+        
+        # Convert cu_seqlens to tensors and compute max_seqlen
+        cu_seqlens_tensors = [torch.tensor(cu_seqlens, dtype=torch.int32) for cu_seqlens in cu_seqlens_list]
+        max_seqlens = [torch.max(x[1:] - x[:-1]).item() for x in cu_seqlens_tensors]
+        
+        return {
+            "input_ids": torch.from_numpy(masked_input_ids),
+            "labels": torch.from_numpy(labels),
+            "cu_seqlens": cu_seqlens_tensors,
+            "max_seqlen": max_seqlens,
+            "attention_mask": attention_mask_batch,
+        }
+
+
 class ConcatenatedSequenceCollatorWrapper:
     """Collator wrapper to add sequence_id to batch."""
 
@@ -380,6 +525,57 @@ def build_text_dataloader(
             "group_method is deprecated and has been removed.\nTo "
             + "concatenate, use the --concat_tokens "
             + "argument when creating your MDS dataset with convert_dataset.py"
+        )
+
+    # Check if this is a pre-packed dataset
+    is_prepacked = cfg.dataset.get("prepacked", False)
+    
+    if is_prepacked:
+        # Pre-packed datasets must be streaming and must have mlm_probability set
+        if not cfg.dataset.get("streaming", True):
+            raise ValueError("Pre-packed datasets (prepacked=true) must use streaming=true")
+        mlm_probability = cfg.dataset.get("mlm_probability", None)
+        if mlm_probability is None:
+            raise ValueError("Pre-packed datasets require mlm_probability to be set")
+        
+        # Build pre-packed streaming dataset
+        dataset = PrePackedStreamingDataset(
+            remote=cfg.dataset.get("remote", None),
+            local=cfg.dataset.get("local", None),
+            split=cfg.dataset.get("split", None),
+            download_retry=cfg.dataset.get("download_retry", 2),
+            download_timeout=cfg.dataset.get("download_timeout", 60),
+            validate_hash=cfg.dataset.get("validate_hash", None),
+            keep_zip=cfg.dataset.get("keep_zip", False),
+            epoch_size=cfg.dataset.get("epoch_size", None),
+            predownload=cfg.dataset.get("predownload", 100_000),
+            partition_algo=cfg.dataset.get("partition_algo", "orig"),
+            num_canonical_nodes=cfg.dataset.get("num_canonical_nodes", 128),
+            batch_size=device_batch_size,
+            shuffle=cfg.dataset.get("shuffle", False),
+            shuffle_algo=cfg.dataset.get("shuffle_algo", "py1s"),
+            shuffle_seed=cfg.dataset.get("shuffle_seed", 9176),
+            cache_limit=cfg.dataset.get("cache_limit", None),
+        )
+        
+        # Use PrePackedMLMCollator to apply MLM masking at runtime
+        collate_fn = PrePackedMLMCollator(
+            mask_token_id=tokenizer.mask_token_id,
+            pad_token_id=tokenizer.pad_token_id,
+            mlm_probability=mlm_probability,
+        )
+        
+        return DataLoader(
+            dataset,
+            collate_fn=collate_fn,
+            batch_size=device_batch_size,
+            drop_last=cfg.drop_last,
+            num_workers=cfg.num_workers,
+            pin_memory=cfg.get("pin_memory", True),
+            prefetch_factor=cfg.get("prefetch_factor", 2),
+            persistent_workers=cfg.get("persistent_workers", True),
+            timeout=cfg.get("timeout", 0),
+            sampler=None,  # Streaming dataset handles its own sampling
         )
 
     if cfg.dataset.get("streaming", True):
