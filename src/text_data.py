@@ -290,6 +290,98 @@ class ConcatenatedSequenceCollatorWrapper:
         return torch.cat([left_zeros, cumulative_sep[:, :-1]], dim=1)
 
 
+class PrePackedCollator:
+    """Collator for pre-packed streaming datasets.
+    
+    Computes cu_seqlens from EOS token positions and applies MLM masking on-the-fly.
+    """
+
+    def __init__(
+        self,
+        eos_token_id: int,
+        pad_token_id: int,
+        mask_token_id: int,
+        mlm_probability: float,
+        ignore_token_id: int = -100,
+    ):
+        self.eos_token_id = eos_token_id
+        self.pad_token_id = pad_token_id
+        self.mask_token_id = mask_token_id
+        self.mlm_probability = mlm_probability
+        self.ignore_token_id = ignore_token_id
+        self.np_rng = np.random.default_rng()
+
+    def __call__(self, examples: List[Any]) -> Dict[str, torch.Tensor]:
+        """Collate pre-packed examples into a batch.
+        
+        Args:
+            examples: List of examples, each with "input_ids" field
+            
+        Returns:
+            Batch dict with input_ids, labels, attention_mask, cu_seqlens, max_seqlen
+        """
+        # Stack input_ids
+        input_ids_list = []
+        for example in examples:
+            input_ids = example["input_ids"]
+            if isinstance(input_ids, bytes):
+                input_ids = np.frombuffer(input_ids, dtype=np.int64)
+            if isinstance(input_ids, np.ndarray):
+                input_ids = torch.from_numpy(input_ids)
+            input_ids_list.append(input_ids)
+        
+        batch_input_ids = torch.stack(input_ids_list, dim=0)
+        batch_size, seq_len = batch_input_ids.shape
+        
+        # Compute cu_seqlens from EOS token positions
+        cu_seqlens = []
+        max_seqlens = []
+        
+        for i in range(batch_size):
+            # Find EOS token positions
+            eos_positions = (batch_input_ids[i] == self.eos_token_id).nonzero(as_tuple=True)[0]
+            
+            # Build cumulative sequence lengths
+            cu_seq = [0]
+            for pos in eos_positions:
+                cu_seq.append(pos.item() + 1)
+            
+            # Always add the final position if not already there (matching GreedyBestFitSequencePacker)
+            if cu_seq[-1] != seq_len:
+                cu_seq.append(seq_len)
+            
+            cu_seqlens.append(torch.tensor(cu_seq, dtype=torch.int32))
+            
+            # Compute max sequence length
+            if len(cu_seq) > 1:
+                seq_lens = np.diff(cu_seq)
+                max_seqlens.append(int(seq_lens.max()))
+            else:
+                max_seqlens.append(0)
+        
+        # Apply MLM masking
+        batch_input_ids_np = batch_input_ids.numpy()
+        masked_batch, labels = SequencePacker.mlm_masking(
+            batch_input_ids_np,
+            self.mlm_probability,
+            self.mask_token_id,
+            self.pad_token_id,
+            self.ignore_token_id,
+            self.np_rng,
+        )
+        
+        # Create attention mask
+        attention_mask = np.where(batch_input_ids_np == self.pad_token_id, 0, 1)
+        
+        return {
+            "input_ids": torch.from_numpy(masked_batch),
+            "labels": torch.from_numpy(labels),
+            "attention_mask": torch.from_numpy(attention_mask),
+            "cu_seqlens": cu_seqlens,
+            "max_seqlen": max_seqlens,
+        }
+
+
 def build_streaming_dataset(
     cfg: DictConfig,
     tokenizer: Tokenizer,
@@ -432,17 +524,32 @@ def build_text_dataloader(
         )
         return BufferedIterable(sequence_packer, buffer_size=cfg.get("packing_prefetch_factor", 5))
     else:
-        collate_fn = transformers.DataCollatorForLanguageModeling(
-            tokenizer=tokenizer, mlm=mlm_probability is not None, mlm_probability=mlm_probability
-        )
-
-        eos_token_id = cfg.dataset.get("eos_token_id")
-        bos_token_id = cfg.dataset.get("bos_token_id")
-        if (eos_token_id is not None) or (bos_token_id is not None):
-            # Note: Will raise an error if both are non-None
-            collate_fn = ConcatenatedSequenceCollatorWrapper(
-                base_collator=collate_fn, eos_token_id=eos_token_id, bos_token_id=bos_token_id
+        # Check if we're using pre-packed data
+        if cfg.dataset.get("pre_packed", False):
+            # Use PrePackedCollator for pre-packed streaming datasets
+            eos_token_id = cfg.dataset.get("eos_token_id")
+            if eos_token_id is None:
+                raise ValueError("eos_token_id must be provided in config when using pre_packed=true")
+            
+            collate_fn = PrePackedCollator(
+                eos_token_id=eos_token_id,
+                pad_token_id=tokenizer.pad_token_id,
+                mask_token_id=tokenizer.mask_token_id,
+                mlm_probability=mlm_probability if mlm_probability is not None else 0.0,
+                ignore_token_id=-100,
             )
+        else:
+            collate_fn = transformers.DataCollatorForLanguageModeling(
+                tokenizer=tokenizer, mlm=mlm_probability is not None, mlm_probability=mlm_probability
+            )
+
+            eos_token_id = cfg.dataset.get("eos_token_id")
+            bos_token_id = cfg.dataset.get("bos_token_id")
+            if (eos_token_id is not None) or (bos_token_id is not None):
+                # Note: Will raise an error if both are non-None
+                collate_fn = ConcatenatedSequenceCollatorWrapper(
+                    base_collator=collate_fn, eos_token_id=eos_token_id, bos_token_id=bos_token_id
+                )
 
         return DataLoader(
             dataset,
